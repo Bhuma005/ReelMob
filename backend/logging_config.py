@@ -24,10 +24,11 @@ SECRET_PATTERNS = [
     re.compile(r'(?i)(api[_-]?key|token|secret|password|authorization|cookie|sessionid)=([^\s&,;]+)'),
     re.compile(r'(?i)("?(?:api[_-]?key|token|secret|password|authorization)"?\s*[:=]\s*)"([^"]+)"'),
     re.compile(r'gsk_[a-zA-Z0-9]{20,}'),
-    re.compile(r'AQ\.[a-zA-Z0-9_\-]{20,}'),
-    re.compile(r'AIzaSy[a-zA-Z0-9_\-]{30,}'),
-    re.compile(r'ey[a-zA-Z0-9_\-]{30,}\.ey[a-zA-Z0-9_\-]{30,}\.[a-zA-Z0-9_\-]{30,}'), # JWT
+    re.compile(r'AQ\.[a-zA-Z0-9_\-]{10,}'),
+    re.compile(r'AIzaSy[a-zA-Z0-9_\-]{20,}'),
+    re.compile(r'ey[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}\.[a-zA-Z0-9_\-]{10,}'), # JWT
 ]
+
 
 
 def redact_sensitive_data(text: str) -> str:
@@ -99,6 +100,13 @@ class ConsoleLogFormatter(logging.Formatter):
         if record.exc_info:
             base += "\n" + self.formatException(record.exc_info)
         return base
+
+
+# Aliases for compatibility
+JSONFormatter = JsonLogFormatter
+ConsoleFormatter = ConsoleLogFormatter
+RequestIDFilter = SecretRedactingFilter
+
 
 
 def setup_logging() -> logging.Logger:

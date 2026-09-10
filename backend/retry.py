@@ -14,7 +14,8 @@ import time
 import asyncio
 import logging
 import urllib.error
-from typing import Callable, TypeVar, Any
+from typing import Callable, TypeVar, Any, Optional
+
 
 logger = logging.getLogger("reelsmob.retry")
 
@@ -23,8 +24,9 @@ T = TypeVar("T")
 
 def is_transient_error(exc: Exception) -> bool:
     """Identifies whether an exception represents a temporary, recoverable outage."""
-    if isinstance(exc, (TimeoutError, asyncio.TimeoutError)):
+    if isinstance(exc, (TimeoutError, asyncio.TimeoutError, ConnectionError)):
         return True
+
     
     # urllib HTTP errors
     if isinstance(exc, urllib.error.HTTPError):
@@ -48,12 +50,13 @@ async def async_retry(
     *args: Any,
     max_retries: int = 3,
     initial_delay: float = 0.5,
+    retry_delay: Optional[float] = None,
     backoff_factor: float = 2.0,
     operation_name: str = "operation",
     **kwargs: Any
 ) -> Any:
     """Executes an async function with exponential backoff retries for transient errors."""
-    delay = initial_delay
+    delay = retry_delay if retry_delay is not None else initial_delay
     last_exc: Exception = Exception("Unknown failure")
 
     for attempt in range(1, max_retries + 1):
@@ -85,13 +88,15 @@ def sync_retry(
     *args: Any,
     max_retries: int = 3,
     initial_delay: float = 0.5,
+    retry_delay: Optional[float] = None,
     backoff_factor: float = 2.0,
     operation_name: str = "operation",
     **kwargs: Any
 ) -> T:
     """Executes a synchronous function with exponential backoff retries for transient errors."""
-    delay = initial_delay
+    delay = retry_delay if retry_delay is not None else initial_delay
     last_exc: Exception = Exception("Unknown failure")
+
 
     for attempt in range(1, max_retries + 1):
         try:

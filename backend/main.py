@@ -144,21 +144,24 @@ async def http_exception_handler(request: Request, exc: HTTPException):
 @app.exception_handler(RequestValidationError)
 async def validation_exception_handler(request: Request, exc: RequestValidationError):
     req_id = request_id_ctx_var.get()
-    errors = exc.errors()
-    logger.warning(f"Validation error on {request.url.path}: {errors}")
+    raw_errors = exc.errors()
+    logger.warning(f"Validation error on {request.url.path}: {raw_errors}")
+    from fastapi.encoders import jsonable_encoder
+    safe_errors = jsonable_encoder(raw_errors)
     return JSONResponse(
         status_code=422,
         content={
-            "detail": errors,
+            "detail": safe_errors,
             "error": {
                 "code": 422,
                 "message": "Validation error",
-                "details": errors,
+                "details": safe_errors,
                 "request_id": req_id
             }
         },
         headers={"X-Request-ID": req_id or ""}
     )
+
 
 
 # Global Exception Handler: Unhandled Exception
