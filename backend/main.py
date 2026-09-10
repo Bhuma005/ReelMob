@@ -2,33 +2,56 @@ import os
 import time
 import asyncio
 import logging
-from typing import Optional, List, Dict
-from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse
-from pydantic import BaseModel, HttpUrl
-import yt_dlp
 import uuid
 import glob
 import re
 import urllib.request
 import tempfile
+import shutil
+from typing import Optional, List, Dict
+from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
+from fastapi.exceptions import RequestValidationError
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse
+import yt_dlp
+
+from backend.logging_config import setup_logging, request_id_ctx_var
+from backend.config import (
+    APP_NAME,
+    ENVIRONMENT,
+    CORS_ORIGINS,
+    DOWNLOAD_DIR,
+    RATE_LIMIT_BURST,
+    RATE_LIMIT_SECONDS,
+    YTDL_TIMEOUT_SECONDS,
+    validate_config,
+)
+from backend.retry import async_retry, is_transient_error
+from backend.schemas import (
+    URLRequest,
+    DownloadRequest,
+    AnalyzeRequest,
+    ConvertRequest,
+    validate_video_url,
+    sanitize_filename_or_id,
+)
 from backend.automate import router as automate_router
 from backend.youtube_auth import router as yt_auth_router
-from backend.utils import sanitize_url
 
-# Configure Structured Logging
-logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
-logger = logging.getLogger(__name__)
+# Initialize Structured Redacting Logger
+setup_logging()
+logger = logging.getLogger("reelsmob.main")
 
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+# Fail-safe config sanity check at startup
+validate_config(fail_fast=False)
 
-app = FastAPI(title="ReelsMob")
+APP_START_TIME = time.time()
+app = FastAPI(title=APP_NAME, version="2.0.0")
 
-# CORS configuration for frontend
+# CORS configuration
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=CORS_ORIGINS if "*" not in CORS_ORIGINS else ["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -37,82 +60,156 @@ app.add_middleware(
 app.include_router(automate_router)
 app.include_router(yt_auth_router)
 
-DOWNLOAD_DIR = os.path.join(os.path.dirname(os.path.dirname(__file__)), "downloads")
-os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-
-class URLRequest(BaseModel):
-    url: str
-
-class DownloadRequest(BaseModel):
-    url: str
-    format_id: str
-
-class AnalyzeRequest(BaseModel):
-    title: Optional[str] = ''
-    description: Optional[str] = ''
-    url: Optional[str] = ''
-    video_path: Optional[str] = ''
-
 RATE_LIMIT_STORE: Dict[str, list] = {}
-RATE_LIMIT_BURST = 5
-RATE_LIMIT_SECONDS = 1.0
 
+
+# Middleware 1: Request ID context and execution timing
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    req_id = request.headers.get("X-Request-ID") or uuid.uuid4().hex[:12]
+    token = request_id_ctx_var.set(req_id)
+    t0 = time.perf_counter()
+    try:
+        response = await call_next(request)
+        duration_ms = (time.perf_counter() - t0) * 1000.0
+        response.headers["X-Request-ID"] = req_id
+        # Log request lifecycle
+        logger.info(
+            f"{request.method} {request.url.path} - {response.status_code} ({duration_ms:.1f}ms)"
+        )
+        return response
+    except Exception as exc:
+        duration_ms = (time.perf_counter() - t0) * 1000.0
+        logger.error(
+            f"{request.method} {request.url.path} failed after {duration_ms:.1f}ms: {exc}"
+        )
+        raise exc
+    finally:
+        request_id_ctx_var.reset(token)
+
+
+# Middleware 2: IP-based sliding-window Rate Limiting
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
     client_ip = request.client.host if request.client else "unknown"
     now = time.time()
-    
-    # Get request timestamps for this IP
+
     history = RATE_LIMIT_STORE.get(client_ip, [])
-    # Remove timestamps older than RATE_LIMIT_SECONDS
     history = [t for t in history if now - t < RATE_LIMIT_SECONDS]
-    
+
     if len(history) >= RATE_LIMIT_BURST:
-        from fastapi.responses import JSONResponse
+        req_id = request_id_ctx_var.get()
+        logger.warning(f"Rate limit exceeded for IP {client_ip} on {request.url.path}")
         return JSONResponse(
-            status_code=429, 
-            content={"detail": "Too many requests. Please slow down."}
+            status_code=429,
+            content={
+                "detail": "Too many requests. Please slow down.",
+                "error": {
+                    "code": 429,
+                    "message": "Too many requests. Please slow down.",
+                    "request_id": req_id
+                }
+            },
+            headers={"X-Request-ID": req_id or ""}
         )
-    
+
     history.append(now)
     RATE_LIMIT_STORE[client_ip] = history
-    response = await call_next(request)
-    return response
+    return await call_next(request)
+
+
+# Global Exception Handler: HTTPException
+@app.exception_handler(HTTPException)
+async def http_exception_handler(request: Request, exc: HTTPException):
+    req_id = request_id_ctx_var.get()
+    if exc.status_code >= 500:
+        logger.error(f"HTTPException {exc.status_code} on {request.url.path}: {exc.detail}")
+    else:
+        logger.warning(f"HTTPException {exc.status_code} on {request.url.path}: {exc.detail}")
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={
+            "detail": exc.detail,
+            "error": {
+                "code": exc.status_code,
+                "message": str(exc.detail),
+                "request_id": req_id
+            }
+        },
+        headers={"X-Request-ID": req_id or ""}
+    )
+
+
+# Global Exception Handler: RequestValidationError
+@app.exception_handler(RequestValidationError)
+async def validation_exception_handler(request: Request, exc: RequestValidationError):
+    req_id = request_id_ctx_var.get()
+    errors = exc.errors()
+    logger.warning(f"Validation error on {request.url.path}: {errors}")
+    return JSONResponse(
+        status_code=422,
+        content={
+            "detail": errors,
+            "error": {
+                "code": 422,
+                "message": "Validation error",
+                "details": errors,
+                "request_id": req_id
+            }
+        },
+        headers={"X-Request-ID": req_id or ""}
+    )
+
+
+# Global Exception Handler: Unhandled Exception
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    req_id = request_id_ctx_var.get()
+    logger.exception(f"Unhandled internal server error on {request.url.path}: {exc}")
+    return JSONResponse(
+        status_code=500,
+        content={
+            "detail": "Internal server error.",
+            "error": {
+                "code": 500,
+                "message": "Internal server error",
+                "request_id": req_id
+            }
+        },
+        headers={"X-Request-ID": req_id or ""}
+    )
+
 
 def validate_url(url: str):
-    url = sanitize_url(url)
-    if not url:
-        raise HTTPException(status_code=400, detail="URL cannot be empty or invalid.")
-        
-    is_valid = "instagram.com" in url or "youtube.com" in url or "youtu.be" in url
-    if not is_valid:
-        raise HTTPException(status_code=400, detail="Invalid URL. Please provide a valid Instagram or YouTube link.")
-    return url
+    """Backward compatibility wrapper around validate_video_url."""
+    return validate_video_url(url)
+
 
 @app.post("/formats", summary="Get Video Formats", description="Returns a list of available video formats for a valid URL.")
 async def get_formats(req: URLRequest, request: Request):
-    
-    req.url = validate_url(req.url)
-    
+    clean_url = validate_video_url(req.url)
+
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'socket_timeout': 30,
     }
-    
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Fetching info for {req.url}")
-            info = await asyncio.to_thread(ydl.extract_info, req.url, download=False)
-            
+            logger.info(f"Fetching info for {clean_url}")
+            info = await asyncio.wait_for(
+                asyncio.to_thread(ydl.extract_info, clean_url, download=False),
+                timeout=YTDL_TIMEOUT_SECONDS
+            )
+
             if not info:
                 raise HTTPException(status_code=400, detail="Could not extract info. Video might be private or unavailable.")
-            
-            formats = info.get('formats', [])
+
             import math
             def get_aspect_ratio(w, h):
                 if not w or not h: return "Unknown"
-                # Handle common slight deviations
                 if w == 1080 and h == 1920: return "9:16"
                 if w == 1920 and h == 1080: return "16:9"
                 if w == 1080 and h == 1350: return "4:5"
@@ -122,7 +219,7 @@ async def get_formats(req: URLRequest, request: Request):
 
             formats = info.get('formats', [])
             resolutions = []
-            
+
             for f in formats:
                 if f.get('vcodec') != 'none':
                     w = f.get('width', 0)
@@ -130,13 +227,12 @@ async def get_formats(req: URLRequest, request: Request):
                     fps = f.get('fps', 0)
                     vcodec = f.get('vcodec', 'unknown')
                     acodec = f.get('acodec', 'none')
-                    
+
                     has_audio = acodec != 'none'
-                    # If video-only, we request yt-dlp to merge best audio
                     fmt_id = f.get('format_id')
                     if not has_audio:
                         fmt_id = f"{fmt_id}+bestaudio"
-                        
+
                     resolutions.append({
                         "format_id": fmt_id,
                         "resolution": f"{w}x{h}" if w and h else f.get('format_note', 'Unknown'),
@@ -150,11 +246,9 @@ async def get_formats(req: URLRequest, request: Request):
                         "filesize": f.get('filesize') or f.get('filesize_approx', 0),
                         "is_original": False
                     })
-            
-            # Sort by resolution (width*height) descending
+
             resolutions.sort(key=lambda x: (x['width'] * x['height']), reverse=True)
-            
-            # Remove duplicates based on resolution
+
             unique_resolutions = []
             seen = set()
             for r in resolutions:
@@ -163,11 +257,10 @@ async def get_formats(req: URLRequest, request: Request):
                     seen.add(key)
                     unique_resolutions.append(r)
 
-            # Add the "Original Source" as the absolute first option
             best_w = info.get('width') or (unique_resolutions[0]['width'] if unique_resolutions else 0)
             best_h = info.get('height') or (unique_resolutions[0]['height'] if unique_resolutions else 0)
             best_fps = info.get('fps') or (unique_resolutions[0]['fps'] if unique_resolutions else 0)
-            
+
             original_format = {
                 "format_id": "bestvideo+bestaudio/best",
                 "resolution": f"{best_w}x{best_h}" if best_w else "Best",
@@ -175,18 +268,23 @@ async def get_formats(req: URLRequest, request: Request):
                 "height": best_h,
                 "aspect_ratio": get_aspect_ratio(best_w, best_h),
                 "fps": best_fps,
-                "ext": "mp4", # yt-dlp will merge to mp4 by default or mkv if needed, we can force mp4
+                "ext": "mp4",
                 "has_audio": True,
                 "is_original": True
             }
-            
+
             return [original_format] + unique_resolutions
-            
+
+    except asyncio.TimeoutError:
+        logger.error(f"Timeout extracting formats for {clean_url}")
+        raise HTTPException(status_code=504, detail="Timeout while fetching video formats from upstream.")
     except yt_dlp.utils.DownloadError as e:
-        print(f"yt-dlp error: {e}")
+        logger.error(f"yt-dlp error: {e}")
         raise HTTPException(status_code=400, detail=f"Download error: {str(e)}")
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Error: {e}")
+        logger.exception(f"Error fetching formats for {clean_url}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error while fetching formats.")
 
 
@@ -195,48 +293,57 @@ def cleanup_partial_downloads(temp_id: str):
     for file in glob.glob(os.path.join(DOWNLOAD_DIR, f"{temp_id}*")):
         try:
             os.remove(file)
-            print(f"Cleaned up {file}")
+            logger.info(f"Cleaned up partial download {file}")
         except Exception as e:
-            print(f"Failed to clean up {file}: {e}")
+            logger.warning(f"Failed to clean up {file}: {e}")
+
 
 @app.post("/download", summary="Download specific video format", description="Downloads the video from the provided URL using the requested format ID.")
 async def download_video(req: DownloadRequest, request: Request):
-    req.url = validate_url(req.url)
-    
+    clean_url = validate_video_url(req.url)
+    clean_fmt = sanitize_filename_or_id(req.format_id)
+    if not clean_fmt:
+        raise HTTPException(status_code=400, detail="Invalid format_id provided.")
+
     temp_id = str(uuid.uuid4())
     ydl_opts = {
-        'format': req.format_id,
+        'format': clean_fmt,
         'outtmpl': os.path.join(DOWNLOAD_DIR, f"{temp_id}.%(ext)s"),
         'quiet': False,
+        'socket_timeout': 30,
     }
-    
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Downloading format {req.format_id} for {req.url}")
-            info = await asyncio.to_thread(ydl.extract_info, req.url, download=True)
-            
-            ext = info.get('ext', 'mp4')
+            logger.info(f"Downloading format {clean_fmt} for {clean_url}")
+            info = await asyncio.wait_for(
+                asyncio.to_thread(ydl.extract_info, clean_url, download=True),
+                timeout=YTDL_TIMEOUT_SECONDS * 3
+            )
+
+            ext = info.get('ext', 'mp4') if info else 'mp4'
             filepath = os.path.join(DOWNLOAD_DIR, f"{temp_id}.{ext}")
-            
+
             if not os.path.exists(filepath):
                 downloaded_files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{temp_id}*"))
                 if downloaded_files:
                     filepath = downloaded_files[0]
                 else:
                     raise FileNotFoundError("Download failed, file not found.")
-            
-            video_id = info.get('id', temp_id)
+
+            raw_id = info.get('id', temp_id) if info else temp_id
+            video_id = sanitize_filename_or_id(raw_id) or temp_id
             final_filename = f"{video_id}.{filepath.split('.')[-1]}"
             final_filepath = os.path.join(DOWNLOAD_DIR, final_filename)
-            
+
             if os.path.exists(final_filepath):
                 try:
                     os.remove(final_filepath)
-                except:
+                except Exception:
                     final_filepath = os.path.join(DOWNLOAD_DIR, f"{video_id}_{temp_id}.{filepath.split('.')[-1]}")
-                    
+
             os.rename(filepath, final_filepath)
-            
+
             # Run FFprobe verification for audit logs
             import subprocess
             import json
@@ -263,25 +370,33 @@ async def download_video(req: DownloadRequest, request: Request):
                 logger.error(f"FFprobe verification failed: {e}")
 
             return FileResponse(
-                path=final_filepath, 
-                media_type=f"video/{final_filepath.split('.')[-1]}", 
+                path=final_filepath,
+                media_type=f"video/{final_filepath.split('.')[-1]}",
                 filename=final_filename
             )
-            
+
+    except asyncio.TimeoutError:
+        cleanup_partial_downloads(temp_id)
+        logger.error(f"Timeout downloading {clean_url}")
+        raise HTTPException(status_code=504, detail="Timeout while downloading video from upstream.")
     except yt_dlp.utils.DownloadError as e:
         cleanup_partial_downloads(temp_id)
-        print(f"yt-dlp error: {e}")
+        logger.error(f"yt-dlp error: {e}")
         raise HTTPException(status_code=400, detail=f"Download error: {str(e)}")
+    except HTTPException:
+        cleanup_partial_downloads(temp_id)
+        raise
     except Exception as e:
         cleanup_partial_downloads(temp_id)
-        print(f"Error: {e}")
+        logger.exception(f"Error downloading video {clean_url}: {e}")
         raise HTTPException(status_code=500, detail="Internal server error during download.")
+
 
 @app.post("/metadata", summary="Fetch Video Metadata", description="Extracts basic title, description, and hashtags from a video URL.")
 async def get_metadata(req: URLRequest, request: Request):
     # validate_url handles invalid urls with HTTPException 400, but for metadata we want 200 with nulls on failure.
     try:
-        req.url = validate_url(req.url)
+        clean_url = validate_video_url(req.url)
     except HTTPException:
         return {"title": None, "description": None, "description_clean": None, "hashtags": [], "thumbnail_url": None}
 
@@ -289,16 +404,20 @@ async def get_metadata(req: URLRequest, request: Request):
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'socket_timeout': 30,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, req.url, download=False)
+            info = await asyncio.wait_for(
+                asyncio.to_thread(ydl.extract_info, clean_url, download=False),
+                timeout=30.0
+            )
             if not info:
                 return {"title": None, "description": None, "description_clean": None, "hashtags": [], "thumbnail_url": None}
             title = info.get('title')
             description = info.get('description') or ''
             thumbnail_url = info.get('thumbnail')
-            
+
             hashtags = []
             seen = set()
             for match in re.finditer(r'#\w+', description):
@@ -306,11 +425,11 @@ async def get_metadata(req: URLRequest, request: Request):
                 if tag not in seen:
                     seen.add(tag)
                     hashtags.append(tag)
-            
+
             description_clean = re.sub(r'#\w+', '', description)
             description_clean = re.sub(r'[ \t]+', ' ', description_clean)
             description_clean = re.sub(r'\n\s*\n', '\n', description_clean).strip()
-            
+
             return {
                 "title": title,
                 "description": description,
@@ -322,13 +441,14 @@ async def get_metadata(req: URLRequest, request: Request):
                 "comment_count": info.get('comment_count')
             }
     except Exception as e:
-        print(f"Metadata error: {e}")
+        logger.warning(f"Metadata extraction error: {e}")
         return {"title": None, "description": None, "description_clean": None, "hashtags": [], "thumbnail_url": None}
+
 
 @app.post("/metadata/comments", summary="Extract Comments Hashtags", description="Pulls comment sections and parses the author's own hashtags for deep viral tagging.")
 async def get_metadata_comments(req: URLRequest, request: Request):
     try:
-        req.url = validate_url(req.url)
+        clean_url = validate_video_url(req.url)
     except HTTPException:
         return {"hashtags": [], "available": False}
 
@@ -337,16 +457,20 @@ async def get_metadata_comments(req: URLRequest, request: Request):
         'no_warnings': True,
         'extract_flat': False,
         'getcomments': True,
+        'socket_timeout': 30,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, req.url, download=False)
+            info = await asyncio.wait_for(
+                asyncio.to_thread(ydl.extract_info, clean_url, download=False),
+                timeout=30.0
+            )
             if not info:
                 return {"hashtags": [], "available": False}
-            
+
             uploader = info.get('uploader') or info.get('uploader_id')
             comments = info.get('comments', [])
-            
+
             hashtags = []
             seen = set()
             for comment in comments:
@@ -358,46 +482,57 @@ async def get_metadata_comments(req: URLRequest, request: Request):
                         if tag not in seen:
                             seen.add(tag)
                             hashtags.append(tag)
-                            
+
             return {"hashtags": hashtags, "available": True}
     except Exception as e:
-        print(f"Comments metadata error: {e}")
+        logger.warning(f"Comments metadata error: {e}")
         return {"hashtags": [], "available": False}
+
 
 @app.post("/download-thumbnail", summary="Download Best Thumbnail", description="Retrieves and proxies the max resolution thumbnail for a video URL.")
 async def download_thumbnail(req: URLRequest, request: Request):
-    req.url = validate_url(req.url)
-    
+    clean_url = validate_video_url(req.url)
+
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
+        'socket_timeout': 30,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = await asyncio.to_thread(ydl.extract_info, req.url, download=False)
+            info = await asyncio.wait_for(
+                asyncio.to_thread(ydl.extract_info, clean_url, download=False),
+                timeout=30.0
+            )
             if not info:
                 raise HTTPException(status_code=400, detail="Could not extract info.")
             thumbnail_url = info.get('thumbnail')
             if not thumbnail_url:
                 raise HTTPException(status_code=404, detail="Thumbnail not found.")
-                
+
             temp_id = str(uuid.uuid4())
             ext = thumbnail_url.split('?')[0].split('.')[-1]
             if not ext or len(ext) > 4:
                 ext = 'jpg'
-                
+
             filepath = os.path.join(DOWNLOAD_DIR, f"{temp_id}_thumb.{ext}")
             urllib.request.urlretrieve(thumbnail_url, filepath)
-            
+
+            raw_id = info.get('id', temp_id)
+            safe_id = sanitize_filename_or_id(raw_id) or temp_id
+
             return FileResponse(
-                path=filepath, 
-                media_type=f"image/{ext if ext != 'jpg' else 'jpeg'}", 
-                filename=f"thumbnail_{info.get('id', temp_id)}.{ext}"
+                path=filepath,
+                media_type=f"image/{ext if ext != 'jpg' else 'jpeg'}",
+                filename=f"thumbnail_{safe_id}.{ext}"
             )
+    except HTTPException:
+        raise
     except Exception as e:
-        print(f"Thumbnail error: {e}")
+        logger.exception(f"Thumbnail error: {e}")
         raise HTTPException(status_code=500, detail="Internal server error fetching thumbnail.")
+
         
 import hashlib
 from datetime import datetime
@@ -790,12 +925,13 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
 
 @app.get("/api/analyze/status/{job_id}", summary="Get AI Analysis Job Status")
 async def get_ai_job_status(job_id: str):
-    job = AI_JOBS_STORE.get(job_id)
+    clean_job_id = sanitize_filename_or_id(job_id)
+    job = AI_JOBS_STORE.get(clean_job_id)
     if not job:
-        if job_id.startswith("cached_"):
-            return {"job_id": job_id, "status": "COMPLETED", "progress": 100, "current_step": "Complete", "result": None}
+        if clean_job_id.startswith("cached_"):
+            return {"job_id": clean_job_id, "status": "COMPLETED", "progress": 100, "current_step": "Complete", "result": None}
         raise HTTPException(status_code=404, detail="AI job not found")
-        
+
     return {
         "job_id": job["job_id"],
         "status": job["status"],
@@ -807,13 +943,14 @@ async def get_ai_job_status(job_id: str):
 
 @app.post("/api/analyze/cancel/{job_id}", summary="Cancel AI Analysis Job")
 async def cancel_ai_job(job_id: str):
-    job = AI_JOBS_STORE.get(job_id)
+    clean_job_id = sanitize_filename_or_id(job_id)
+    job = AI_JOBS_STORE.get(clean_job_id)
     if not job:
         return {"success": False, "message": "Job not found"}
     job["status"] = "CANCELLED"
     job["progress"] = 0
     job["current_step"] = "Cancelled by user"
-    return {"success": True, "job_id": job_id, "status": "CANCELLED"}
+    return {"success": True, "job_id": clean_job_id, "status": "CANCELLED"}
 
 @app.get("/api/scheduling/recommendation", summary="Get Posting Intelligence Recommendation")
 async def get_scheduling_recommendation(topic: str = None, category: str = None):
@@ -837,7 +974,7 @@ async def get_dashboard_stats():
         res_published = sb.table("video_library").select("id", count="exact").eq("status", "published").execute()
         res_cleaned = sb.table("video_library").select("id", count="exact").eq("status", "cleaned").execute()
         res_failed = sb.table("video_library").select("id", count="exact").eq("status", "failed").execute()
-        
+
         def get_count(res):
             return res.count if getattr(res, "count", None) is not None else len(res.data)
 
@@ -867,23 +1004,27 @@ async def get_dashboard_videos(
     # Enforce safe parameter bounds
     page = max(1, page)
     limit = max(1, min(limit, 100))
+    if search:
+        search = search.strip()[:200]
+    if status:
+        status = status.strip()[:50]
     try:
         sb = get_supabase_client()
         query = sb.table("video_library").select("*", count="exact")
-        
+
         if status and status.lower() != 'all':
             query = query.eq("status", status.lower())
-            
+
         if search and search.strip():
             query = query.ilike("title", f"%{search.strip()}%")
-            
+
         start = max(0, (page - 1) * limit)
         end = start + limit - 1
-        
+
         res = query.order("created_at", desc=True).range(start, end).execute()
         videos = res.data or []
         total_count = res.count if getattr(res, "count", None) is not None else len(videos)
-        
+
         for v in videos:
             if v.get("storage_path") and v.get("status") not in ['cleaned', 'published']:
                 try:
@@ -892,7 +1033,7 @@ async def get_dashboard_videos(
                 except Exception as e:
                     logger.error(f"Failed to generate signed url: {e}")
             v["storage_exists"] = bool(v.get("storage_path"))
-            
+
         return {
             "videos": videos,
             "total": total_count,
@@ -909,27 +1050,30 @@ async def get_dashboard_videos(
 async def delete_dashboard_video(video_id: str):
     from cloud.cloud_auth import get_supabase_client
     from datetime import datetime
+    clean_video_id = sanitize_filename_or_id(video_id)
+    if not clean_video_id:
+        return {"status": "error", "message": "Invalid video_id"}
     try:
         sb = get_supabase_client()
-        res = sb.table("video_library").select("storage_path, title").eq("id", video_id).execute()
+        res = sb.table("video_library").select("storage_path, title").eq("id", clean_video_id).execute()
         if not res.data:
             return {"status": "error", "message": "Video not found"}
-        
+
         storage_path = res.data[0].get("storage_path")
         title = res.data[0].get("title")
-        
+
         if storage_path:
             try:
                 sb.storage.from_("reelgrab-videos").remove([storage_path])
             except Exception as e:
                 logger.error(f"Failed to delete from storage: {e}")
-            
-        sb.table("scheduled_videos").delete().eq("library_video_id", video_id).execute()
-        sb.table("video_library").delete().eq("id", video_id).execute()
-        
+
+        sb.table("scheduled_videos").delete().eq("library_video_id", clean_video_id).execute()
+        sb.table("video_library").delete().eq("id", clean_video_id).execute()
+
         with open("reelgrab_audit.log", "a", encoding='utf-8') as log_file:
-            log_file.write(f"[{datetime.now().isoformat()}] DELETED VIDEO | ID: {video_id} | Title: {title} | Storage: {storage_path}\n")
-            
+            log_file.write(f"[{datetime.now().isoformat()}] DELETED VIDEO | ID: {clean_video_id} | Title: {title} | Storage: {storage_path}\n")
+
         return {"status": "success", "message": "Video deleted successfully"}
     except Exception as e:
         logger.error(f"Failed to delete video: {e}")
@@ -939,10 +1083,6 @@ async def delete_dashboard_video(video_id: str):
         return {"status": "error", "message": repr(e)}
 
 
-from pydantic import BaseModel
-class ConvertRequest(BaseModel):
-    ratio: str
-
 @app.post("/api/dashboard/videos/{video_id}/convert", summary="Convert Aspect Ratio")
 async def convert_dashboard_video(video_id: str, req: ConvertRequest):
     from cloud.cloud_auth import get_supabase_client
@@ -950,7 +1090,11 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
     import subprocess
     import uuid
     import asyncio
-    
+
+    clean_video_id = sanitize_filename_or_id(video_id)
+    if not clean_video_id:
+        return {"status": "error", "message": "Invalid video_id"}
+
     ratio_map = {
         "9:16": (1080, 1920),
         "1:1": (1080, 1080),
@@ -960,28 +1104,27 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
     if req.ratio not in ratio_map:
         return {"status": "error", "message": "Invalid ratio"}
     W, H = ratio_map[req.ratio]
-    
+
     try:
         sb = get_supabase_client()
-        res = sb.table("video_library").select("storage_path").eq("id", video_id).execute()
+        res = sb.table("video_library").select("storage_path").eq("id", clean_video_id).execute()
         if not res.data:
             return {"status": "error", "message": "Video not found"}
-            
+
         storage_path = res.data[0].get("storage_path")
-        
+
         # 1. Download the original video completely to memory or disk
         temp_in = f"downloads/conv_in_{uuid.uuid4().hex}.mp4"
         temp_out = f"downloads/conv_out_{uuid.uuid4().hex}.mp4"
         os.makedirs("downloads", exist_ok=True)
-        
+
         with open(temp_in, "wb") as f:
             res_down = sb.storage.from_("reelgrab-videos").download(storage_path)
             f.write(res_down)
-            
+
         # 2. Run FFmpeg (blur background padding technique)
         filter_complex = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,boxblur=20:20,crop={W}:{H}[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={W}/{H}"
         cmd = [
-            # Check if ffmpeg exists locally (downloaded by standard agent setup)
             "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else "ffmpeg",
             "-y", "-i", temp_in,
             "-lavfi", filter_complex,
@@ -990,25 +1133,25 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
             "-c:a", "copy",
             temp_out
         ]
-        
+
         def run_ffmpeg():
             return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            
+
         process = await asyncio.to_thread(run_ffmpeg)
-        
+
         if process.returncode != 0:
             logger.error(f"FFmpeg error: {process.stderr.decode()}")
             return {"status": "error", "message": "FFmpeg conversion failed: " + process.stderr.decode()[:200]}
-            
+
         # 3. Upload overwritten video back to Supabase
         sb.storage.from_("reelgrab-videos").remove([storage_path])
         with open(temp_out, "rb") as f:
             sb.storage.from_("reelgrab-videos").upload(storage_path, f, file_options={"content-type": "video/mp4"})
-            
+
         # Cleanup
         if os.path.exists(temp_in): os.remove(temp_in)
         if os.path.exists(temp_out): os.remove(temp_out)
-        
+
         return {"status": "success", "message": "Converted"}
     except Exception as e:
         logger.error(f"Convert error: {e}")
@@ -1024,7 +1167,11 @@ async def publish_dashboard_video(video_id: str):
     import os
     import tempfile
     from datetime import datetime, timezone, timedelta
-    
+
+    clean_video_id = sanitize_filename_or_id(video_id)
+    if not clean_video_id:
+        return {"status": "error", "message": "Invalid video_id"}
+
     try:
         try:
             from googleapiclient.discovery import build
@@ -1034,67 +1181,66 @@ async def publish_dashboard_video(video_id: str):
             return {"status": "error", "message": "Google API packages missing (pip install google-api-python-client google-auth-oauthlib)"}
 
         sb = get_supabase_client()
-        res = sb.table("video_library").select("*").eq("id", video_id).execute()
+        res = sb.table("video_library").select("*").eq("id", clean_video_id).execute()
         if not res.data:
             return {"status": "error", "message": "Video not found in library"}
-            
+
         video = res.data[0]
         if video.get("status") in ["published", "delete_pending", "cleaned"] or video.get("youtube_video_id"):
             return {"status": "error", "message": "Already published!"}
-            
+
         if not video.get("storage_path"):
             return {"status": "error", "message": "Video file is missing from cloud storage"}
-            
+
         sb.table("video_activity_log").insert({
-            "video_id": video_id,
+            "video_id": clean_video_id,
             "event_type": "UPLOAD_STARTED",
             "message": "Manual publish triggered from dashboard"
         }).execute()
-            
-        print("Downloading video for publish:", video.get("storage_path"))
+
+        logger.info(f"Downloading video for publish: {video.get('storage_path')}")
         file_bytes = sb.storage.from_("reelgrab-videos").download(video.get("storage_path"))
-        
+
         from cloud.cloud_auth import get_youtube_creds
         try:
             creds_data = get_youtube_creds()
-        except:
+        except Exception:
             return {"status": "error", "message": "YouTube Credentials not configured in .env"}
-            
+
         creds = Credentials(
-          token=None,
-          refresh_token=creds_data["refresh_token"],
-          token_uri="https://oauth2.googleapis.com/token",
-          client_id=creds_data["client_id"],
-          client_secret=creds_data["client_secret"]
+            token=None,
+            refresh_token=creds_data["refresh_token"],
+            token_uri="https://oauth2.googleapis.com/token",
+            client_id=creds_data["client_id"],
+            client_secret=creds_data["client_secret"]
         )
         yt_service = build("youtube", "v3", credentials=creds)
-        
+
         tags = video.get("hashtags", [])
         if isinstance(tags, str): tags = tags.replace("#", "").split()
         else: tags = [t.replace("#", "") for t in tags]
-        
+
         tag_str = " ".join([f"#{t}" for t in tags])
         full_desc = f"{video.get('description', '')}\n\n{tag_str}".strip()
-        
+
         body = {
-              "snippet": {
-                  "title": video.get("title", "ReelGrab Upload"),
-                  "description": full_desc,
-                  "tags": tags,
-                  "categoryId": "22"
-              },
-              "status": {
-                  "privacyStatus": "public",
-                  "madeForKids": False,
-                  "selfDeclaredMadeForKids": False
-              }
+            "snippet": {
+                "title": video.get("title", "ReelGrab Upload"),
+                "description": full_desc,
+                "tags": tags,
+                "categoryId": "22"
+            },
+            "status": {
+                "privacyStatus": "public",
+                "madeForKids": False,
+                "selfDeclaredMadeForKids": False
+            }
         }
-        
-        # Create temp file
+
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
             tmp.write(file_bytes)
             tmp_path = tmp.name
-            
+
         try:
             media = MediaFileUpload(tmp_path, mimetype="video/mp4", resumable=True)
             request = yt_service.videos().insert(
@@ -1105,26 +1251,25 @@ async def publish_dashboard_video(video_id: str):
             response = None
             while response is None:
                 status, response = request.next_chunk()
-                
+
             yt_id = response.get("id")
             yt_url = f"https://youtube.com/shorts/{yt_id}"
             now = datetime.now(timezone.utc).isoformat()
-            
+
             sb.table("video_library").update({
                 "status": "published",
                 "upload_status": "uploaded",
                 "youtube_video_id": yt_id,
                 "youtube_url": yt_url,
                 "uploaded_at": now
-            }).eq("id", video_id).execute()
-            
+            }).eq("id", clean_video_id).execute()
+
             sb.table("video_activity_log").insert({
-                "video_id": video_id,
+                "video_id": clean_video_id,
                 "event_type": "YOUTUBE_UPLOAD_SUCCESS",
                 "message": f"Successfully published via dashboard. ID: {yt_id}"
             }).execute()
-            
-            # Since we manually published, let's mark it as uploaded in the queue so it gets cleaned up
+
             now_dt = datetime.now(timezone.utc)
             delete_after = (now_dt + timedelta(days=3)).isoformat()
             sb.table("scheduled_videos").update({
@@ -1132,13 +1277,13 @@ async def publish_dashboard_video(video_id: str):
                 "delete_after": delete_after,
                 "youtube_video_id": yt_id,
                 "uploaded_at": now
-            }).eq("library_video_id", video_id).execute()
-            
+            }).eq("library_video_id", clean_video_id).execute()
+
             return {"status": "success", "message": "Published"}
         finally:
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
-        
+
     except Exception as e:
         import traceback
         logger.error(f"Publish error: {e}")
@@ -1149,7 +1294,9 @@ async def publish_dashboard_video(video_id: str):
 async def get_dashboard_logs(limit: int = 50):
     from cloud.cloud_auth import get_supabase_client
     import os
-    
+
+    limit = max(1, min(limit, 100))
+
     # 1. Fetch structured activity events from video_activity_log
     activity_events = []
     try:
@@ -1169,7 +1316,7 @@ async def get_dashboard_logs(limit: int = 50):
                 if line:
                     local_logs.append(line)
         local_logs.reverse()
-        
+
     return {
         "activity_events": activity_events,
         "logs": local_logs[:limit]
@@ -1185,9 +1332,9 @@ HEALTH_CACHE = {
 async def health_check():
     import time
     global HEALTH_CACHE
-    
+
     now = time.time()
-    if HEALTH_CACHE["data"] and (now - HEALTH_CACHE["last_check"] < 30):
+    if HEALTH_CACHE["data"] and (now - HEALTH_CACHE["last_check"] < 20):
         return HEALTH_CACHE["data"]
 
     def _do_check():
@@ -1201,10 +1348,12 @@ async def health_check():
                 "database": {"status": "ok", "message": "Connected to Supabase DB"},
                 "storage": {"status": "ok", "message": "Storage bucket accessible"},
                 "ollama": {"status": "unknown", "message": ""},
-                "youtube": {"status": "unknown", "message": ""}
+                "youtube": {"status": "unknown", "message": ""},
+                "disk": {"status": "ok", "message": "Storage disk healthy"},
+                "ffmpeg": {"status": "ok", "message": "FFmpeg available"}
             }
         }
-        
+
         # 1. Supabase Database check
         try:
             sb = get_supabase_client()
@@ -1212,12 +1361,16 @@ async def health_check():
         except Exception as e:
             health["services"]["database"] = {"status": "warning", "message": f"DB check: {str(e)[:60]}"}
 
-        # 2. Ollama check
+        # 2. Ollama / Cloud AI check
         try:
-            req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                if resp.status == 200:
-                    health["services"]["ollama"] = {"status": "ok", "message": "Ollama active"}
+            from backend.services.cloud_ai import is_cloud_ai_available
+            if is_cloud_ai_available():
+                health["services"]["ollama"] = {"status": "ok", "message": "ReelsMob Cloud AI active"}
+            else:
+                req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+                with urllib.request.urlopen(req, timeout=2.0) as resp:
+                    if resp.status == 200:
+                        health["services"]["ollama"] = {"status": "ok", "message": "Ollama active"}
         except Exception:
             health["services"]["ollama"] = {"status": "info", "message": "Ollama offline (fallback active)"}
 
@@ -1228,12 +1381,117 @@ async def health_check():
         else:
             health["services"]["youtube"] = {"status": "info", "message": "YouTube account not linked yet"}
 
+        # 4. Disk check
+        try:
+            usage = shutil.disk_usage(DOWNLOAD_DIR)
+            free_gb = usage.free / (1024 ** 3)
+            health["services"]["disk"] = {"status": "ok", "message": f"{free_gb:.1f} GB available"}
+        except Exception as e:
+            health["services"]["disk"] = {"status": "warning", "message": str(e)}
+
+        # 5. FFmpeg check
+        ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+        if not ffmpeg_bin:
+            health["services"]["ffmpeg"] = {"status": "warning", "message": "FFmpeg not detected"}
+
         return health
 
     result = await asyncio.to_thread(_do_check)
     HEALTH_CACHE["data"] = result
     HEALTH_CACHE["last_check"] = now
     return result
+
+
+@app.get("/api/health/detailed", summary="Detailed Health and Latency Audit", description="Reports latency in milliseconds for each external dependency.")
+async def health_check_detailed():
+    """Returns granular latency timings and operational status for all dependencies."""
+    from cloud.cloud_auth import get_supabase_client
+    import time
+    from datetime import datetime, timezone
+
+    t_start = time.perf_counter()
+    dependencies: Dict[str, dict] = {}
+    overall_healthy = True
+
+    # 1. Supabase Database check with latency
+    t0 = time.perf_counter()
+    try:
+        sb = get_supabase_client()
+        sb.table("video_library").select("id").limit(1).execute()
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["database"] = {"status": "ok", "latency_ms": latency_ms, "message": "Supabase DB reachable"}
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["database"] = {"status": "error", "latency_ms": latency_ms, "message": str(e)[:120]}
+        overall_healthy = False
+
+    # 2. Supabase Storage bucket access
+    t0 = time.perf_counter()
+    try:
+        sb = get_supabase_client()
+        sb.storage.from_("reelgrab-videos").list()
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["storage"] = {"status": "ok", "latency_ms": latency_ms, "message": "Storage bucket accessible"}
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["storage"] = {"status": "warning", "latency_ms": latency_ms, "message": str(e)[:120]}
+
+    # 3. AI Service status & latency
+    t0 = time.perf_counter()
+    try:
+        from backend.services.cloud_ai import is_cloud_ai_available
+        if is_cloud_ai_available():
+            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+            dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "ReelsMob Cloud AI"}
+        else:
+            req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
+            with urllib.request.urlopen(req, timeout=2.0) as resp:
+                latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+                if resp.status == 200:
+                    dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "Ollama (local)"}
+                else:
+                    dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "fallback"}
+    except Exception:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "deterministic_fallback"}
+
+    # 4. YouTube OAuth status
+    yt_creds_path = os.path.join(os.path.dirname(__file__), "youtube_credentials.json")
+    if os.path.exists(yt_creds_path) and os.path.getsize(yt_creds_path) > 10:
+        dependencies["youtube"] = {"status": "configured", "message": "OAuth token file present"}
+    else:
+        dependencies["youtube"] = {"status": "unlinked", "message": "OAuth token file missing or empty"}
+
+    # 5. Disk storage
+    try:
+        usage = shutil.disk_usage(DOWNLOAD_DIR)
+        dependencies["disk"] = {
+            "status": "ok" if usage.free > (500 * 1024 * 1024) else "warning",
+            "free_gb": round(usage.free / (1024 ** 3), 2),
+            "total_gb": round(usage.total / (1024 ** 3), 2)
+        }
+    except Exception as e:
+        dependencies["disk"] = {"status": "error", "message": str(e)}
+
+    # 6. FFmpeg availability
+    ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+    dependencies["ffmpeg"] = {
+        "status": "ok" if ffmpeg_bin else "missing",
+        "path": ffmpeg_bin or "Not Found"
+    }
+
+    total_latency_ms = round((time.perf_counter() - t_start) * 1000.0, 2)
+    uptime_seconds = round(time.time() - APP_START_TIME, 1)
+
+    return {
+        "status": "healthy" if overall_healthy else "degraded",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "uptime_seconds": uptime_seconds,
+        "total_audit_latency_ms": total_latency_ms,
+        "environment": ENVIRONMENT,
+        "dependencies": dependencies
+    }
+
 
 
 @app.get("/api/health/ai", summary="AI Health Check")

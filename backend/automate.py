@@ -14,13 +14,10 @@ import logging
 from pathlib import Path
 import dateutil.parser
 from datetime import datetime, date, timedelta
+from pydantic import field_validator
+from backend.schemas import validate_video_url
 
-logger = logging.getLogger(__name__)
-import logging
-fh = logging.FileHandler('automate_debug.log')
-fh.setLevel(logging.DEBUG)
-logger.addHandler(fh)
-
+logger = logging.getLogger("reelsmob.automate")
 
 from backend.ai_pipeline import generate_shorts_content
 from cloud.enqueue import enqueue_video
@@ -36,6 +33,11 @@ class AutomateRequest(BaseModel):
     thumbnail_url: Optional[str] = None
     url: str
     opus_mode: Optional[bool] = False
+
+    @field_validator('url')
+    @classmethod
+    def check_url(cls, v: str) -> str:
+        return validate_video_url(v)
     iso_schedule: Optional[str] = None
     scheduled_time_human: Optional[str] = None
     # Optional enrichment fields (sent from frontend if available)
