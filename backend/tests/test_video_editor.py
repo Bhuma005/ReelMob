@@ -82,6 +82,34 @@ def test_api_video_edit_endpoint_validation():
     res = client.post("/api/video/edit", json={"video_path": "non_existent_12345.mp4"})
     assert res.status_code == 404
 
+    # 3. Out-of-whitelist caption color rejected with 422
+    res = client.post("/api/video/edit", json={
+        "video_path": "valid_name.mp4",
+        "captions": {"text": "Hello", "color": "white:x=0,drawtext=text='x'"}
+    })
+    assert res.status_code == 422
+
+    # 4. Out-of-whitelist caption position rejected with 422
+    res = client.post("/api/video/edit", json={
+        "video_path": "valid_name.mp4",
+        "captions": {"text": "Hello", "position": "nowhere"}
+    })
+    assert res.status_code == 422
+
+    # 5. Out-of-whitelist watermark position rejected with 422
+    res = client.post("/api/video/edit", json={
+        "video_path": "valid_name.mp4",
+        "watermark": {"text": "Brand", "position": "middle-right"}
+    })
+    assert res.status_code == 422
+
+    # 6. Out-of-whitelist framing rejected with 422
+    res = client.post("/api/video/edit", json={
+        "video_path": "valid_name.mp4",
+        "framing": "stretched_canvas"
+    })
+    assert res.status_code == 422
+
 
 def test_api_video_edit_endpoint_success(sample_video):
     client = TestClient(app)
