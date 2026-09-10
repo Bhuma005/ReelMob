@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, Suspense } from 'react';
 import { Outlet, NavLink } from 'react-router-dom';
 import Sidebar from './Sidebar';
 import Topbar from './Topbar';
@@ -38,7 +38,20 @@ export default function AppLayout() {
         
         <main className="flex-1 overflow-y-auto p-4 md:p-8 pb-20 sm:pb-8">
           <div className="max-w-6xl mx-auto">
-            <Outlet />
+            <Suspense fallback={
+              <div className="space-y-6 animate-pulse p-2">
+                <div className="h-8 w-64 bg-surface-2 rounded-lg" />
+                <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+                  <div className="h-24 bg-surface-2 rounded-xl" />
+                  <div className="h-24 bg-surface-2 rounded-xl" />
+                  <div className="h-24 bg-surface-2 rounded-xl" />
+                  <div className="h-24 bg-surface-2 rounded-xl" />
+                </div>
+                <div className="h-96 bg-surface-2 rounded-2xl" />
+              </div>
+            }>
+              <Outlet />
+            </Suspense>
           </div>
         </main>
 
