@@ -9,10 +9,11 @@ import { Tooltip } from '../components/ui/Tooltip';
 import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 import { VideoPreviewModal } from '../components/video/VideoPreviewModal';
 import { ConvertRatioModal } from '../components/video/ConvertRatioModal';
+import { VideoEditorModal } from '../components/video/VideoEditorModal';
 import { 
   Trash2, Film, RefreshCw, CheckCircle2, AlertTriangle, CloudOff, 
   Search, ChevronLeft, ChevronRight, ExternalLink, Play, 
-  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw
+  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
@@ -30,6 +31,7 @@ export default function LibraryPage() {
   const [selectedIds, setSelectedIds] = useState([]);
   const [previewVideo, setPreviewVideo] = useState(null);
   const [convertingVideo, setConvertingVideo] = useState(null);
+  const [editingVideo, setEditingVideo] = useState(null);
   const [publishingVideo, setPublishingVideo] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
@@ -454,6 +456,16 @@ export default function LibraryPage() {
                     >
                       <RefreshCw className="w-3.5 h-3.5" />
                     </Button>
+                    <Button
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setEditingVideo(v)}
+                      className="h-7 px-2 text-xs text-text-muted hover:text-accent cursor-pointer"
+                      title="Studio Edit (Trim, Color, Captions, Brand)"
+                    >
+                      <Scissors className="w-3.5 h-3.5" />
+                    </Button>
                   </div>
 
                   <div className="flex items-center gap-1">
@@ -613,6 +625,16 @@ export default function LibraryPage() {
                           >
                             <RefreshCw className="w-3.5 h-3.5" />
                           </Button>
+                          <Button
+                            type="button"
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => setEditingVideo(v)}
+                            className="h-7 px-2 text-xs text-text-muted hover:text-accent cursor-pointer"
+                            title="Studio Edit (Trim, Color, Captions, Brand)"
+                          >
+                            <Scissors className="w-3.5 h-3.5" />
+                          </Button>
 
                           {v.status === 'failed' ? (
                             <Button
@@ -712,6 +734,19 @@ export default function LibraryPage() {
           onClose={() => setConvertingVideo(null)}
           isConverting={convertMutation.isPending}
           onConvert={(id, ratio) => convertMutation.mutate({ id, ratio })}
+        />
+      )}
+
+      {editingVideo && (
+        <VideoEditorModal
+          isOpen={Boolean(editingVideo)}
+          onClose={() => setEditingVideo(null)}
+          videoPath={editingVideo.storage_path || editingVideo.id}
+          videoUrl={editingVideo.storage_path ? `/download/${editingVideo.storage_path.replace(/^videos\//, '')}` : ''}
+          onSaveSuccess={() => {
+            queryClient.invalidateQueries({ queryKey: ['library-videos'] });
+            queryClient.invalidateQueries({ queryKey: ['dashboard-stats'] });
+          }}
         />
       )}
 

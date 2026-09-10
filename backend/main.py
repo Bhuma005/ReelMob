@@ -32,6 +32,7 @@ from backend.schemas import (
     DownloadRequest,
     AnalyzeRequest,
     ConvertRequest,
+    EditVideoRequest,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1162,6 +1163,77 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         err = traceback.format_exc()
         logger.error(f"Convert error trace: {err}")
         return {"status": "error", "message": repr(e)}
+
+
+@app.post("/api/video/edit", summary="In-App Video Editor (Trim, Color, Captions, Watermark, Framing)")
+async def edit_video_endpoint(req: EditVideoRequest):
+    """
+    Processes video edits using FFmpeg in a single optimized pass:
+    - trim (start/end in seconds)
+    - color filters (brightness, contrast, saturation)
+    - captions burn-in with customizable position and font
+    - corner watermark text
+    - aspect framing (original, blur_pad, crop)
+    """
+    from backend.services.video_editor import process_video_edit
+
+    clean_path = sanitize_filename_or_id(req.video_path)
+    candidate_paths = [
+        os.path.join("downloads", clean_path),
+        clean_path,
+        os.path.join("downloads", os.path.basename(clean_path)),
+    ]
+    input_file = None
+    for p in candidate_paths:
+        if os.path.exists(p) and os.path.isfile(p):
+            input_file = p
+            break
+
+    if not input_file:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Source video file not found for path: {clean_path}"
+        )
+
+    out_name = f"edited_{uuid.uuid4().hex[:10]}.mp4"
+    output_path = os.path.join("downloads", out_name)
+
+    trim_dict = req.trim.model_dump() if req.trim else None
+    color_dict = req.color.model_dump() if req.color else None
+    captions_dict = req.captions.model_dump() if req.captions else None
+    watermark_dict = req.watermark.model_dump() if req.watermark else None
+
+    try:
+        result = await asyncio.to_thread(
+            process_video_edit,
+            input_path=input_file,
+            output_path=output_path,
+            trim=trim_dict,
+            color=color_dict,
+            captions=captions_dict,
+            watermark=watermark_dict,
+            framing=req.framing,
+        )
+
+        return {
+            "status": "success",
+            "message": "Video edited successfully",
+            "video_path": out_name,
+            "full_path": output_path,
+            "download_url": f"/download/{out_name}",
+            "metadata": {
+                "width": result.get("width"),
+                "height": result.get("height"),
+                "duration": result.get("duration"),
+                "size_bytes": result.get("size_bytes"),
+            }
+        }
+    except Exception as exc:
+        logger.error(f"Video edit processing failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Video processing failed: {str(exc)}"
+        )
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")
