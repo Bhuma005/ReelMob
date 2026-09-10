@@ -134,9 +134,23 @@ def enqueue_video(
         "upload_status": "pending",
         "library_video_id": library_id
     }
-    queue_res = sb.table("scheduled_videos").insert(queue_row).execute()
-    queue_id = queue_res.data[0]["id"]
-    print(f"[DB] ✅ Queued in scheduled_videos: {queue_id}")
+    try:
+        queue_res = sb.table("scheduled_videos").insert(queue_row).execute()
+        queue_id = queue_res.data[0]["id"]
+        print(f"[DB] ✅ Queued in scheduled_videos: {queue_id}")
+    except Exception as e:
+        print(f"[DB] ❌ Queue insert failed: {e}")
+        print(f"[Storage] Rolling back uploaded file {storage_path}...")
+        try:
+            sb.storage.from_(BUCKET).remove([storage_path])
+        except Exception as storage_err:
+            print(f"[Storage] Failed to remove storage file during rollback: {storage_err}")
+        print(f"[DB] Rolling back library record {library_id}...")
+        try:
+            sb.table("video_library").delete().eq("id", library_id).execute()
+        except Exception as lib_err:
+            print(f"[DB] Failed to delete library record during rollback: {lib_err}")
+        raise e
 
     # ── 5. Log VIDEO_SCHEDULED ────────────────────────────────────────────────
     sb.table("video_activity_log").insert({

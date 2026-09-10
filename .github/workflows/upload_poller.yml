@@ -31,7 +31,7 @@ jobs:
       - name: Install dependencies
         run: |
           # Only installing what's needed for the cloud worker
-          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib supabase
+          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib supabase python-dotenv
           
       - name: Run Upload Workflow
         env:

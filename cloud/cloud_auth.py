@@ -17,10 +17,12 @@ from pathlib import Path
 
 try:
     from dotenv import load_dotenv
-    # Load .env from the cloud folder if it exists
+    # Load root .env first, then cloud/.env overrides if present
+    load_dotenv(Path(__file__).parent.parent / ".env")
     load_dotenv(Path(__file__).parent / ".env")
 except ImportError:
     pass
+
 
 # ── Paths for local fallback ─────────────────────────────────────────────────
 _BACKEND_DIR   = Path(__file__).parent.parent / "backend"
@@ -101,22 +103,65 @@ def get_fresh_access_token() -> str:
 
 # ── Supabase client ───────────────────────────────────────────────────────────
 
-def get_supabase_client():
+_SUPABASE_CLIENT = None
+
+
+def validate_supabase_config(fail_fast: bool = False) -> dict:
     """
-    Returns an initialised supabase-py client.
-    Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from env vars (never committed).
+    Validates that SUPABASE_URL and SUPABASE_SERVICE_KEY are properly defined.
+    If fail_fast is True, raises ValueError or EnvironmentError.
     """
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+
+    errors = []
+    if not url:
+        errors.append("SUPABASE_URL environment variable is missing or empty.")
+    elif not (url.startswith("https://") or url.startswith("http://")):
+        errors.append(f"SUPABASE_URL is malformed: must start with https:// or http:// (got '{url[:15]}...')")
+
+    if not key:
+        errors.append("SUPABASE_SERVICE_KEY environment variable is missing or empty.")
+    elif len(key) < 20:
+        errors.append("SUPABASE_SERVICE_KEY is suspiciously short (expected valid JWT service key).")
+
+    is_valid = len(errors) == 0
+
+    if fail_fast and not is_valid:
+        raise EnvironmentError(" ; ".join(errors))
+
+    return {
+        "valid": is_valid,
+        "url_set": bool(url),
+        "key_set": bool(key),
+        "errors": errors
+    }
+
+
+def get_supabase_client(force_refresh: bool = False):
+    """
+    Returns an initialised, cached supabase-py Client instance.
+    Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from environment variables only (never committed or logged).
+    Reuses connection pool across calls unless force_refresh=True.
+    """
+    global _SUPABASE_CLIENT
+
+    if _SUPABASE_CLIENT is not None and not force_refresh:
+        return _SUPABASE_CLIENT
+
     try:
         from supabase import create_client, Client
     except ImportError:
         raise ImportError("Run: pip install supabase")
 
-    url = os.getenv("SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_KEY")   # service key (bypasses RLS)
+    validation = validate_supabase_config(fail_fast=True)
 
-    if not url or not key:
-        raise EnvironmentError(
-            "Set SUPABASE_URL and SUPABASE_SERVICE_KEY as env vars or GitHub Actions secrets."
-        )
+    url = os.getenv("SUPABASE_URL", "").strip()
+    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
 
-    return create_client(url, key)
+    try:
+        _SUPABASE_CLIENT = create_client(url, key)
+        return _SUPABASE_CLIENT
+    except Exception as exc:
+        raise ConnectionError(f"Failed to initialize Supabase client: {exc}") from exc
+
