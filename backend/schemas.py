@@ -8,7 +8,7 @@ Enforces:
 """
 
 import re
-from typing import Optional, List
+from typing import Optional, List, Literal
 from pydantic import BaseModel, Field, field_validator
 from fastapi import HTTPException
 from backend.utils import sanitize_url
@@ -125,13 +125,13 @@ class VideoColorParams(BaseModel):
 class VideoCaptionParams(BaseModel):
     text: str = Field(..., max_length=500)
     font_size: int = Field(default=36, ge=14, le=72)
-    position: str = Field(default="bottom")
-    color: str = Field(default="white")
+    position: Literal["top", "center", "bottom"] = "bottom"
+    color: Literal["white", "yellow", "cyan", "lime"] = "white"
 
 
 class VideoWatermarkParams(BaseModel):
     text: str = Field(..., max_length=100)
-    position: str = Field(default="bottom-right")
+    position: Literal["top-left", "top-right", "bottom-left", "bottom-right"] = "bottom-right"
     opacity: float = Field(default=0.75, ge=0.1, le=1.0)
 
 
@@ -141,7 +141,7 @@ class EditVideoRequest(BaseModel):
     color: Optional[VideoColorParams] = None
     captions: Optional[VideoCaptionParams] = None
     watermark: Optional[VideoWatermarkParams] = None
-    framing: str = Field(default="original", description="'original', 'blur_pad', or 'crop'")
+    framing: Literal["original", "blur_pad", "crop"] = "original"
 
     @field_validator('video_path')
     @classmethod
