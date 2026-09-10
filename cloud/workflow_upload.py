@@ -52,16 +52,19 @@ def process_pending_uploads():
 
     print(f"[{now_utc}] Checking for pending uploads due before now...")
 
-    # 1. Fetch pending videos due for upload
+    # 1. Fetch pending videos due for upload (FIFO order, max 25 per run)
     res = sb.table("scheduled_videos").select("*") \
             .eq("upload_status", "pending") \
             .lte("schedule_time", now_utc) \
+            .order("schedule_time", desc=False) \
+            .limit(25) \
             .execute()
     
-    videos = res.data
+    videos = res.data or []
     if not videos:
         print("No videos due for upload at this time. Exiting.")
         return
+
 
     print(f"Found {len(videos)} video(s) ready for upload.")
     yt_service = get_youtube_service()
@@ -201,6 +204,12 @@ def process_pending_uploads():
                 }).eq("id", vid_id).execute()
                 if library_id:
                     sb.table("video_library").update({"status": "scheduled"}).eq("id", library_id).execute()
+                    sb.table("video_activity_log").insert({
+                        "video_id": library_id,
+                        "event_type": "YOUTUBE_UPLOAD_RETRY",
+                        "message": f"Upload failed (attempt {retry_count}/3): {err_msg[:200]}"
+                    }).execute()
 
 if __name__ == "__main__":
+
     process_pending_uploads()

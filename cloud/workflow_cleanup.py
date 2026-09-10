@@ -23,13 +23,15 @@ def process_cleanup():
 
     print(f"[{now_utc}] Checking for videos ready to be cleaned up (soft-deleted)...")
 
-    # 1. Fetch uploaded videos whose 3-day retention period has expired
+    # 1. Fetch uploaded videos whose 3-day retention period has expired (batch limit 50)
     res = sb.table("scheduled_videos").select("*") \
             .eq("upload_status", "uploaded") \
             .lte("delete_after", now_utc) \
+            .order("delete_after", desc=False) \
+            .limit(50) \
             .execute()
     
-    videos = res.data
+    videos = res.data or []
     if not videos:
         print("No videos due for cleanup at this time. Exiting.")
         return
@@ -42,7 +44,7 @@ def process_cleanup():
         title = video["title"]
         yt_id = video.get("youtube_video_id", "UNKNOWN")
         storage_path = video["storage_path"]
-        uploaded_at = video.get("uploaded_at")
+        uploaded_at = video.get("uploaded_at") or datetime.now(timezone.utc).isoformat()
 
         print(f"\n🧹 Cleaning up: {title} (Queue ID: {vid_id}, Library ID: {library_id})")
 
@@ -73,6 +75,7 @@ def process_cleanup():
                 "deleted_at": datetime.now(timezone.utc).isoformat(),
             }
             sb.table("videos_audit_log").insert(audit_row).execute()
+
             
             if library_id:
                 sb.table("video_library").update({
