@@ -1,0 +1,49 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+env/
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+.env
+.venv
+venv/
+ENV/
+
+# IDE / OS
+.vscode/
+.idea/
+.DS_Store
+*.swp
+
+# ReelGrab Specific Secrets (NEVER COMMIT THESE)
+backend/client_secrets.json
+backend/youtube_credentials.json
+cloud/.env
+*.mp4
+*.webm
+*.part
+*.ytdl
+backend/ffmpeg.exe
+
+reelgrab_audit.log
+*.log
+backend/ffprobe.exe
+cookies.txt
+backend/cookies.txt

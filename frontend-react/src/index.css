@@ -1,0 +1,53 @@
+@import './styles/tokens.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    --background: var(--bg-canvas);
+    --surface: var(--bg-surface);
+    --surface-elevated: var(--bg-surface-elevated);
+    --surface-hover: var(--bg-surface-hover);
+    
+    --primary: #fafafa;
+    --primary-foreground: #09090b;
+    
+    --secondary: #27272a;
+    --secondary-foreground: #fafafa;
+    
+    --muted: #27272a;
+    --muted-foreground: #a1a1aa;
+    
+    --radius: 0.5rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+  body {
+    @apply bg-background text-text font-sans antialiased;
+    min-height: 100vh;
+    background-color: var(--bg-canvas);
+    color: var(--text);
+  }
+
+  /* Custom scrollbar for dark modern creator UI */
+  ::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  ::-webkit-scrollbar-track {
+    background: transparent;
+  }
+  ::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.15);
+    border-radius: 9999px;
+  }
+  ::-webkit-scrollbar-thumb:hover {
+    background: rgba(255, 255, 255, 0.25);
+  }
+}

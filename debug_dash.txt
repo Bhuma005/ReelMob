@@ -1,0 +1,14 @@
+loadDashboardData = () => {
+    setIsFetchingDashboard(true);
+    fetch(`${API_BASE}/api/dashboard/stats`).then(r => r.json()).then(setDashboardStats).catch(() => { });
+    fetch(`${API_BASE}/api/dashboard/videos`).then(r => r.json()).then(v => {
+      setDashboardVideos(v.videos || []);
+      setIsFetchingDashboard(false);
+    }).catch(() => setIsFetchingDashboard(false));
+  };
+
+  const [isConverting, setIsConverting] = useState(false);
+  const convertVideo = async (vidId, ratio) => {
+    setIsConverting(true);
+    try {
+        const r = await fetch(`${API_BASE}/api/dashboard/videos/${vidId}

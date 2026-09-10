@@ -1,0 +1,40 @@
+name: Automator Cleanup Poller
+
+on:
+  schedule:
+    # Run once daily at 21:30 UTC (which is 03:00 AM IST) - off peak hours
+    - cron: '30 21 * * *'
+  
+  # Allow manual triggering from the GitHub Actions UI for testing
+  workflow_dispatch:
+
+concurrency:
+  group: cleanup-poller
+  cancel-in-progress: false
+
+jobs:
+  cleanup_old_videos:
+    name: Soft Delete and Cleanup Storage
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install supabase
+          
+      - name: Run Cleanup Workflow
+        env:
+          # Only needs Supabase secrets; no YouTube connection required for cleanup
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+        run: |
+          python -m cloud.workflow_cleanup
