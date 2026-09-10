@@ -6,17 +6,18 @@ import { authApi } from './api/auth';
 
 import AppLayout from './components/layout/AppLayout';
 
-import DashboardPage from './pages/DashboardPage';
-import CreateReelPage from './pages/CreateReelPage';
-import LibraryPage from './pages/LibraryPage';
-import SchedulerPage from './pages/SchedulerPage';
-import ConnectionsPage from './pages/ConnectionsPage';
-import LogsPage from './pages/LogsPage';
-import SettingsPage from './pages/SettingsPage';
-import AnalyticsPage from './pages/AnalyticsPage';
 import { ErrorBoundary } from './components/ErrorBoundary';
 
+const DashboardPage = lazy(() => import('./pages/DashboardPage'));
+const CreateReelPage = lazy(() => import('./pages/CreateReelPage'));
+const LibraryPage = lazy(() => import('./pages/LibraryPage'));
+const SchedulerPage = lazy(() => import('./pages/SchedulerPage'));
+const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
+const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'));
+const LogsPage = lazy(() => import('./pages/LogsPage'));
+const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const ComponentGallery = lazy(() => import('./pages/dev/ComponentGallery'));
+
 
 const queryClient = new QueryClient({
   defaultOptions: {

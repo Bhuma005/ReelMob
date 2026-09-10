@@ -109,3 +109,43 @@ class PaginationParams(BaseModel):
     limit: int = Field(default=20, ge=1, le=100, description="Number of items per page (max 100)")
     status: Optional[str] = Field(default=None, max_length=50)
     search: Optional[str] = Field(default=None, max_length=200)
+
+
+class VideoTrimParams(BaseModel):
+    start: float = Field(default=0.0, ge=0.0)
+    end: Optional[float] = Field(default=None, ge=0.0)
+
+
+class VideoColorParams(BaseModel):
+    brightness: float = Field(default=0.0, ge=-0.5, le=0.5)
+    contrast: float = Field(default=1.0, ge=0.5, le=2.0)
+    saturation: float = Field(default=1.0, ge=0.0, le=2.0)
+
+
+class VideoCaptionParams(BaseModel):
+    text: str = Field(..., max_length=500)
+    font_size: int = Field(default=36, ge=14, le=72)
+    position: str = Field(default="bottom")
+    color: str = Field(default="white")
+
+
+class VideoWatermarkParams(BaseModel):
+    text: str = Field(..., max_length=100)
+    position: str = Field(default="bottom-right")
+    opacity: float = Field(default=0.75, ge=0.1, le=1.0)
+
+
+class EditVideoRequest(BaseModel):
+    video_path: str = Field(..., description="Local video filename or path inside downloads/")
+    trim: Optional[VideoTrimParams] = None
+    color: Optional[VideoColorParams] = None
+    captions: Optional[VideoCaptionParams] = None
+    watermark: Optional[VideoWatermarkParams] = None
+    framing: str = Field(default="original", description="'original', 'blur_pad', or 'crop'")
+
+    @field_validator('video_path')
+    @classmethod
+    def check_video_path(cls, v: str) -> str:
+        if not v or '..' in v or '\0' in v:
+            raise ValueError("Invalid or unsafe video_path")
+        return v
