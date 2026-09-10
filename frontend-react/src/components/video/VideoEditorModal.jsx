@@ -5,6 +5,7 @@ import {
 } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { toast } from 'sonner';
+import { useNotificationStore } from '../../stores/notificationStore';
 
 export function VideoEditorModal({
   isOpen,
@@ -154,6 +155,17 @@ export function VideoEditorModal({
 
       const data = await res.json();
       toast.success('Video edit applied successfully!');
+      try {
+        const { addNotification } = useNotificationStore.getState();
+        addNotification({
+          title: 'Video Studio Edit Complete',
+          message: `Rendered edited video: ${data.video_path}`,
+          type: 'success',
+          link: '/library',
+        });
+      } catch {
+        // non-blocking
+      }
       if (onSaveSuccess) {
         onSaveSuccess(data);
       }

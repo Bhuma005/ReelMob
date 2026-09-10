@@ -2,6 +2,7 @@ import React from 'react';
 import { Menu, Plus, Search } from 'lucide-react';
 import { useAppStore } from '../../stores/appStore';
 import { useNavigate } from 'react-router-dom';
+import { NotificationCenter } from './NotificationCenter';
 
 export default function Topbar({ onOpenCommandPalette }) {
   const { setSidebarOpen } = useAppStore();
@@ -41,6 +42,9 @@ export default function Topbar({ onOpenCommandPalette }) {
         >
           <Search className="w-4 h-4" />
         </button>
+
+        {/* In-App Notification Center */}
+        <NotificationCenter />
 
         <button 
           onClick={() => navigate('/create')}
