@@ -20,6 +20,7 @@ from backend.schemas import validate_video_url
 logger = logging.getLogger("reelsmob.automate")
 
 from backend.ai_pipeline import generate_shorts_content
+from backend.fit_to_canvas import fit_to_canvas
 from cloud.enqueue import enqueue_video
 from cloud.cloud_auth import get_supabase_client
 
@@ -126,13 +127,7 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
         return {"status": "error", "message": f"Download failed: {str(e)}"}
 
     # Apply Auto-Detect & Fit-to-Canvas (Master Requirement)
-    import sys
-    # path fixes to reach fit_to_canvas in root
-    root_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
-    if root_dir not in sys.path:
-        sys.path.append(root_dir)
     try:
-        from fit_to_canvas import fit_to_canvas
         fitted_filepath = f"downloads/{uuid.uuid4().hex}_fitted.mp4"
         logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
         await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)

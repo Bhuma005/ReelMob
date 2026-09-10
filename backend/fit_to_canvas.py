@@ -125,7 +125,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
         err = proc.stderr.decode(errors="ignore")
         raise RuntimeError(f"FFmpeg failed with code {proc.returncode}\\n{err[-500:]}")
         
-    print(f"✅ Auto-Detect & Fit-to-Canvas Complete: {output_path}")
+    print(f"[SUCCESS] Auto-Detect & Fit-to-Canvas Complete: {output_path}")
     return output_path
 
 if __name__ == "__main__":
