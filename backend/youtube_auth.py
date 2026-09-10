@@ -12,37 +12,58 @@ CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "youtube_credentials.
 SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
           "https://www.googleapis.com/auth/youtube.readonly"]
 
-# ── helpers ──────────────────────────────────────────────────────────────────
+import logging
+from backend.retry import sync_retry
+
+logger = logging.getLogger("reelsmob.youtube_auth")
 
 def _load_secrets():
-    with open(CLIENT_SECRETS_FILE) as f:
-        data = json.load(f)
-    # supports both "web" and "installed" credential types
-    return data.get("web") or data.get("installed")
+    if not os.path.exists(CLIENT_SECRETS_FILE):
+        return None
+    try:
+        with open(CLIENT_SECRETS_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        return data.get("web") or data.get("installed")
+    except Exception as e:
+        logger.error(f"Failed to read client_secrets.json: {e}")
+        return None
 
 def _save_credentials(token_data: dict):
-    with open(CREDENTIALS_FILE, "w") as f:
-        json.dump(token_data, f, indent=2)
+    try:
+        with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
+            json.dump(token_data, f, indent=2)
+        logger.info("YouTube OAuth credentials saved safely")
+    except Exception as e:
+        logger.error(f"Failed to save credentials: {e}")
 
 def _load_credentials():
     if not os.path.exists(CREDENTIALS_FILE):
         return None
-    with open(CREDENTIALS_FILE) as f:
-        return json.load(f)
+    try:
+        with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logger.warning(f"Failed to parse credentials file: {e}")
+        return None
 
 def _fetch_channel_name(access_token: str) -> str:
+    if not access_token:
+        return "YouTube Channel"
+    req = urllib.request.Request(
+        "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
+        headers={"Authorization": f"Bearer {access_token}"}
+    )
+    def _do_fetch():
+        with urllib.request.urlopen(req, timeout=8) as res:
+            return json.loads(res.read())
+
     try:
-        req = urllib.request.Request(
-            "https://www.googleapis.com/youtube/v3/channels?part=snippet&mine=true",
-            headers={"Authorization": f"Bearer {access_token}"}
-        )
-        with urllib.request.urlopen(req, timeout=5) as res:
-            data = json.loads(res.read())
-            items = data.get("items", [])
-            if items:
-                return items[0]["snippet"]["title"]
+        data = sync_retry(_do_fetch, max_retries=2, operation_name="fetch_channel_name")
+        items = data.get("items", [])
+        if items:
+            return items[0]["snippet"]["title"]
     except Exception as e:
-        print("Channel name fetch error:", e)
+        logger.warning(f"Channel name fetch error (token may be expired): {e}")
     return "YouTube Channel"
 
 # ── routes ───────────────────────────────────────────────────────────────────
@@ -150,7 +171,7 @@ async def auth_callback(request: Request):
         """)
 
     except Exception as e:
-        print("Callback error:", e)
+        logger.error(f"Callback error: {e}")
         return HTMLResponse(f"<h2 style='color:red'>Error: {e}</h2><a href='http://127.0.0.1:9090'>Go back</a>")
 
 

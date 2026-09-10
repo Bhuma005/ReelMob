@@ -84,15 +84,20 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
     payload = json.dumps({'contents': [{'parts': parts}]}).encode('utf-8')
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
 
-    try:
+    from backend.retry import sync_retry
+
+    def _execute():
         with urllib.request.urlopen(req, timeout=25) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            raw_text = data['candidates'][0]['content']['parts'][0]['text']
-            logger.info(f'Gemini visual analysis completed ({len(raw_text)} chars)')
-            return {
-                'visual_summary': raw_text.strip(),
-                'success': True
-            }
+            return json.loads(resp.read().decode('utf-8'))
+
+    try:
+        data = sync_retry(_execute, max_retries=3, operation_name="gemini_vision")
+        raw_text = data['candidates'][0]['content']['parts'][0]['text']
+        logger.info(f'Gemini visual analysis completed ({len(raw_text)} chars)')
+        return {
+            'visual_summary': raw_text.strip(),
+            'success': True
+        }
     except Exception as e:
         logger.error(f'Gemini vision request failed: {e}')
         return {
@@ -124,22 +129,26 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {'responseMimeType': 'application/json'}
     }).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
-    try:
+    from backend.retry import sync_retry
+
+    def _call_gemini_meta():
         with urllib.request.urlopen(req, timeout=15) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            raw = data['candidates'][0]['content']['parts'][0]['text']
-            parsed = json.loads(raw)
-            yt_tags = parsed.get('youtube_hashtags', ['#Shorts', '#ShortsFeed', '#Viral'])
-            ig_tags = parsed.get('instagram_hashtags', ['#Reels', '#ExplorePage'])
-            return {
-                'title': parsed.get('title', 'Must Watch Scene 🔥'),
-                'description': parsed.get('description', visual_summary[:200]),
-                'youtube_hashtags': yt_tags[:15],
-                'instagram_hashtags': ig_tags[:30],
-                'hashtags': list(dict.fromkeys(yt_tags + ig_tags))[:25],
-                'success': True
-            }
+            return json.loads(resp.read().decode('utf-8'))
+
+    try:
+        data = sync_retry(_call_gemini_meta, max_retries=3, operation_name="gemini_metadata")
+        raw = data['candidates'][0]['content']['parts'][0]['text']
+        parsed = json.loads(raw)
+        yt_tags = parsed.get('youtube_hashtags', ['#Shorts', '#ShortsFeed', '#Viral'])
+        ig_tags = parsed.get('instagram_hashtags', ['#Reels', '#ExplorePage'])
+        return {
+            'title': parsed.get('title', 'Must Watch Scene 🔥'),
+            'description': parsed.get('description', visual_summary[:200]),
+            'youtube_hashtags': yt_tags[:15],
+            'instagram_hashtags': ig_tags[:30],
+            'hashtags': list(dict.fromkeys(yt_tags + ig_tags))[:25],
+            'success': True
+        }
     except Exception as e:
         logger.error(f'Gemini metadata fallback failed: {e}')
         return {}
@@ -194,40 +203,46 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
         }
     )
 
-    try:
+    from backend.retry import sync_retry
+
+    def _call_groq():
         with urllib.request.urlopen(req, timeout=12) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            content = data['choices'][0]['message']['content'].strip()
-            
-            # Extract JSON block
-            match = re.search(r'\{.*\}', content, re.DOTALL)
-            if match:
-                content = match.group(0)
+            return json.loads(resp.read().decode('utf-8'))
 
-            parsed = json.loads(content)
-            
-            yt_tags = parsed.get('youtube_hashtags', [])
-            if not isinstance(yt_tags, list):
-                yt_tags = [str(yt_tags)]
-            if '#Shorts' not in yt_tags and '#shorts' not in [t.lower() for t in yt_tags]:
-                yt_tags.insert(0, '#Shorts')
-                yt_tags.insert(1, '#ShortsFeed')
+    try:
+        data = sync_retry(_call_groq, max_retries=3, operation_name="groq_metadata")
+        content = data['choices'][0]['message']['content'].strip()
+        
+        # Extract JSON block
+        match = re.search(r'\{.*\}', content, re.DOTALL)
+        if match:
+            content = match.group(0)
 
-            ig_tags = parsed.get('instagram_hashtags', [])
-            if not isinstance(ig_tags, list):
-                ig_tags = [str(ig_tags)]
+        parsed = json.loads(content)
+        
+        yt_tags = parsed.get('youtube_hashtags', [])
+        if not isinstance(yt_tags, list):
+            yt_tags = [str(yt_tags)]
+        if '#Shorts' not in yt_tags and '#shorts' not in [t.lower() for t in yt_tags]:
+            yt_tags.insert(0, '#Shorts')
+            yt_tags.insert(1, '#ShortsFeed')
 
-            all_tags = list(dict.fromkeys(yt_tags + ig_tags))
+        ig_tags = parsed.get('instagram_hashtags', [])
+        if not isinstance(ig_tags, list):
+            ig_tags = [str(ig_tags)]
 
-            return {
-                'title': parsed.get('title', 'Must Watch Viral Scene 🔥'),
-                'description': parsed.get('description', visual_summary[:200]),
-                'youtube_hashtags': yt_tags[:15],
-                'instagram_hashtags': ig_tags[:30],
-                'hashtags': all_tags[:25],
-                'success': True
-            }
+        all_tags = list(dict.fromkeys(yt_tags + ig_tags))
+
+        return {
+            'title': parsed.get('title', 'Must Watch Viral Scene 🔥'),
+            'description': parsed.get('description', visual_summary[:200]),
+            'youtube_hashtags': yt_tags[:15],
+            'instagram_hashtags': ig_tags[:30],
+            'hashtags': all_tags[:25],
+            'success': True
+        }
     except Exception as e:
+
         logger.warning(f'Groq generation error: {e}, falling back to Gemini...')
         # Try Gemini fallback
         gemini_fallback = generate_metadata_with_gemini(visual_summary, caption=caption)
