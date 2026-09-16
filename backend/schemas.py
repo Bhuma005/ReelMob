@@ -149,3 +149,39 @@ class EditVideoRequest(BaseModel):
         if not v or '..' in v or '\0' in v:
             raise ValueError("Invalid or unsafe video_path")
         return v
+
+
+class HighlightItem(BaseModel):
+    start: float = Field(..., ge=0.0, description="Start timestamp in seconds")
+    end: float = Field(..., ge=0.0, description="End timestamp in seconds")
+    reason: str = Field(..., max_length=500, description="Why this clip is engaging")
+    confidence: float = Field(..., ge=0.0, le=1.0, description="Confidence score between 0 and 1")
+
+
+class HighlightRequest(BaseModel):
+    video_path: Optional[str] = Field(default=None, max_length=1000, description="Local video filename or path inside downloads/")
+    url: Optional[str] = Field(default=None, max_length=2000, description="Source video URL")
+    target_duration_min: float = Field(default=15.0, ge=5.0, le=120.0)
+    target_duration_max: float = Field(default=60.0, ge=10.0, le=300.0)
+    num_clips: int = Field(default=3, ge=1, le=5)
+
+    @field_validator('video_path')
+    @classmethod
+    def check_video_path(cls, v: Optional[str]) -> Optional[str]:
+        if v and ('..' in v or '\0' in v):
+            raise ValueError("Path traversal characters not allowed in video_path")
+        return v
+
+    @field_validator('url')
+    @classmethod
+    def check_url(cls, v: Optional[str]) -> Optional[str]:
+        if v and v.strip():
+            return validate_video_url(v)
+        return v
+
+
+class HighlightResponse(BaseModel):
+    job_id: str
+    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
+    highlights: Optional[List[HighlightItem]] = None
+    error: Optional[str] = None

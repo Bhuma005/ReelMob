@@ -8,7 +8,7 @@ import re
 import urllib.request
 import tempfile
 import shutil
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +33,9 @@ from backend.schemas import (
     AnalyzeRequest,
     ConvertRequest,
     EditVideoRequest,
+    HighlightRequest,
+    HighlightResponse,
+    HighlightItem,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1234,6 +1237,92 @@ async def edit_video_endpoint(req: EditVideoRequest):
             status_code=500,
             detail=f"Video processing failed: {str(exc)}"
         )
+
+
+# In-memory store for async highlight detection jobs
+HIGHLIGHT_JOBS: Dict[str, Dict[str, Any]] = {}
+
+def execute_highlight_job(
+    job_id: str,
+    video_path: Optional[str],
+    target_duration_min: float,
+    target_duration_max: float,
+    num_clips: int,
+    url: Optional[str]
+):
+    from backend.services.highlight_detector import detect_highlights
+
+    job = HIGHLIGHT_JOBS.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "PROCESSING"
+    try:
+        path_to_use = video_path
+        if not path_to_use:
+            downloads_dir = "downloads"
+            if os.path.exists(downloads_dir):
+                files = [
+                    os.path.join(downloads_dir, f)
+                    for f in os.listdir(downloads_dir)
+                    if f.lower().endswith(('.mp4', '.mkv', '.webm', '.mov'))
+                ]
+                if files:
+                    files.sort(key=os.path.getmtime, reverse=True)
+                    path_to_use = files[0]
+
+        if not path_to_use:
+            raise ValueError("No video file specified or found in downloads.")
+
+        clips = detect_highlights(
+            video_path=path_to_use,
+            target_duration_min=target_duration_min,
+            target_duration_max=target_duration_max,
+            num_clips=num_clips,
+            url=url
+        )
+        job["status"] = "COMPLETED"
+        job["highlights"] = clips
+    except Exception as exc:
+        logger.error(f"Highlight job {job_id} failed: {exc}", exc_info=True)
+        job["status"] = "FAILED"
+        job["error"] = str(exc)
+
+
+@app.post("/api/video/highlights", summary="Multi-Clip Highlight Detection (Async Job)")
+async def create_highlights_job(req: HighlightRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    HIGHLIGHT_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "PENDING",
+        "highlights": None,
+        "error": None,
+        "created_at": datetime.now().isoformat()
+    }
+    background_tasks.add_task(
+        execute_highlight_job,
+        job_id=job_id,
+        video_path=req.video_path,
+        target_duration_min=req.target_duration_min,
+        target_duration_max=req.target_duration_max,
+        num_clips=req.num_clips,
+        url=req.url
+    )
+    return {"job_id": job_id, "status": "PENDING"}
+
+
+@app.get("/api/video/highlights/status/{job_id}", summary="Get Highlight Job Status", response_model=HighlightResponse)
+async def get_highlight_job_status(job_id: str):
+    clean_id = sanitize_filename_or_id(job_id)
+    job = HIGHLIGHT_JOBS.get(clean_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Highlight job not found")
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "highlights": job.get("highlights"),
+        "error": job.get("error")
+    }
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")
