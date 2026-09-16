@@ -2,7 +2,7 @@ import React, { useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { 
-  AreaChart, Area, BarChart, Bar, XAxis, YAxis, Tooltip as RechartsTooltip, 
+  AreaChart, Area, BarChart, Bar, LineChart, Line, ReferenceLine, XAxis, YAxis, Tooltip as RechartsTooltip, 
   ResponsiveContainer, CartesianGrid, Cell 
 } from 'recharts';
 import { dashboardApi } from '../api/dashboard';
@@ -10,22 +10,37 @@ import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../co
 import { Button } from '../components/ui/Button';
 import { SkeletonMetric } from '../components/ui/Skeleton';
 import { 
-  Activity, CheckCircle2, Clock, AlertCircle, Sparkles, ExternalLink, ArrowUpRight
+  Activity, CheckCircle2, Clock, AlertCircle, Sparkles, ExternalLink, ArrowUpRight,
+  TrendingUp, TrendingDown, Target, Zap
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
 
-// Custom dark Recharts Tooltip
+// Custom dark Recharts Tooltip with benchmark comparison
 const CustomChartTooltip = ({ active, payload, label }) => {
   if (active && payload && payload.length) {
+    const dataPoint = payload[0]?.payload;
     return (
-      <div className="bg-surface border border-border p-3 rounded-lg shadow-xl text-xs font-mono">
-        <p className="text-text-muted mb-1">{label}</p>
-        {payload.map((item, idx) => (
-          <p key={idx} className="font-bold text-accent">
-            {item.name}: {item.value}
-          </p>
-        ))}
+      <div className="bg-surface border border-border p-3 rounded-lg shadow-xl text-xs font-mono space-y-1">
+        <p className="text-text font-bold font-sans">{dataPoint?.title || label}</p>
+        <div className="flex items-center justify-between gap-4 text-text-muted">
+          <span>Views:</span>
+          <span className="font-bold text-accent">{dataPoint?.views?.toLocaleString() ?? payload[0]?.value}</span>
+        </div>
+        {dataPoint?.rolling_avg_views != null && (
+          <div className="flex items-center justify-between gap-4 text-text-muted">
+            <span>30d Baseline:</span>
+            <span className="font-semibold text-purple-400">{Math.round(dataPoint.rolling_avg_views).toLocaleString()}</span>
+          </div>
+        )}
+        {dataPoint?.diff_pct != null && (
+          <div className="flex items-center justify-between gap-4 pt-1 border-t border-border/60">
+            <span>Benchmark:</span>
+            <span className={dataPoint.diff_pct >= 0 ? "font-bold text-success" : "font-bold text-danger"}>
+              {dataPoint.diff_pct >= 0 ? `+${dataPoint.diff_pct}%` : `${dataPoint.diff_pct}%`}
+            </span>
+          </div>
+        )}
       </div>
     );
   }
@@ -34,7 +49,7 @@ const CustomChartTooltip = ({ active, payload, label }) => {
 
 export default function AnalyticsPage() {
   const navigate = useNavigate();
-  const [timeRange, setTimeRange] = useState('7d');
+  const [timeRange, setTimeRange] = useState('30d');
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['dashboardStats'],
@@ -45,6 +60,12 @@ export default function AnalyticsPage() {
     queryKey: ['dashboardVideosAnalytics'],
     queryFn: () => dashboardApi.getVideos({ page: 1, limit: 50 }),
   });
+
+  const { data: trendsData, isLoading: trendsLoading } = useQuery({
+    queryKey: ['dashboardTrends', timeRange],
+    queryFn: () => dashboardApi.getTrends(timeRange === '7d' ? 7 : 30),
+  });
+
 
   const pending = stats?.pending ?? stats?.scheduled ?? 0;
   const uploaded = stats?.uploaded ?? stats?.published ?? 0;
@@ -222,6 +243,115 @@ export default function AnalyticsPage() {
         </Card>
       )}
 
+      {/* 30-Day Channel Trend Benchmark Comparison Card */}
+      <Card className="bg-surface border-border overflow-hidden">
+        <CardHeader className="py-4 px-6 border-b border-border flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-surface-elevated/20">
+          <div>
+            <div className="flex items-center gap-2">
+              <TrendingUp className="w-4 h-4 text-accent" />
+              <CardTitle className="text-sm font-semibold text-text">
+                Channel Performance Trends & 30-Day Rolling Benchmark
+              </CardTitle>
+            </div>
+            <CardDescription className="text-xs text-text-muted mt-0.5">
+              Telemetry tracking individual reel views against the 30-day channel baseline
+            </CardDescription>
+          </div>
+
+          <div className="flex items-center gap-2">
+            <span className="text-[11px] font-mono text-purple-400 bg-purple-500/10 border border-purple-500/20 px-2.5 py-1 rounded-md flex items-center gap-1.5">
+              <Target className="w-3.5 h-3.5" />
+              Baseline: {Math.round(trendsData?.summary?.rolling_avg_views || 0).toLocaleString()} views
+            </span>
+          </div>
+        </CardHeader>
+
+        <CardContent className="p-6 space-y-6">
+          {/* Trend KPI Stat Badges */}
+          <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
+            <div className="p-3 rounded-lg bg-surface-elevated/50 border border-border">
+              <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider block">
+                30-Day Channel Baseline
+              </span>
+              <span className="text-lg font-mono font-bold text-text mt-0.5 block">
+                {Math.round(trendsData?.summary?.rolling_avg_views || 0).toLocaleString()}
+              </span>
+              <span className="text-[10px] text-text-muted">Views per reel average</span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-success/5 border border-success/20">
+              <span className="text-[10px] font-mono text-success uppercase tracking-wider block flex items-center gap-1">
+                <TrendingUp className="w-3 h-3" /> Overperforming
+              </span>
+              <span className="text-lg font-mono font-bold text-success mt-0.5 block">
+                {trendsData?.summary?.overperforming_count ?? 0} Reels
+              </span>
+              <span className="text-[10px] text-success/80">&gt; 15% above channel baseline</span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-danger/5 border border-danger/20">
+              <span className="text-[10px] font-mono text-danger uppercase tracking-wider block flex items-center gap-1">
+                <TrendingDown className="w-3 h-3" /> Underperforming
+              </span>
+              <span className="text-lg font-mono font-bold text-danger mt-0.5 block">
+                {trendsData?.summary?.underperforming_count ?? 0} Reels
+              </span>
+              <span className="text-[10px] text-danger/80">&lt; 15% below channel baseline</span>
+            </div>
+
+            <div className="p-3 rounded-lg bg-surface-elevated/50 border border-border">
+              <span className="text-[10px] font-mono text-text-muted uppercase tracking-wider block flex items-center gap-1">
+                <Zap className="w-3 h-3 text-accent" /> Avg Engagement
+              </span>
+              <span className="text-lg font-mono font-bold text-accent mt-0.5 block">
+                {trendsData?.summary?.rolling_avg_engagement_rate ?? 0}%
+              </span>
+              <span className="text-[10px] text-text-muted">Likes & comments ratio</span>
+            </div>
+          </div>
+
+          {/* Benchmark Recharts Line Chart */}
+          <div className="h-64 w-full">
+            <ResponsiveContainer width="100%" height="100%">
+              <LineChart data={trendsData?.trends || []} margin={{ top: 10, right: 15, left: -15, bottom: 0 }}>
+                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                <XAxis 
+                  dataKey="date" 
+                  stroke="#71717a" 
+                  fontSize={11} 
+                  tickLine={false} 
+                  axisLine={false} 
+                />
+                <YAxis 
+                  stroke="#71717a" 
+                  fontSize={11} 
+                  tickLine={false} 
+                  axisLine={false} 
+                />
+                <RechartsTooltip content={<CustomChartTooltip />} />
+                {trendsData?.summary?.rolling_avg_views && (
+                  <ReferenceLine 
+                    y={trendsData.summary.rolling_avg_views} 
+                    stroke="#c084fc" 
+                    strokeDasharray="4 4" 
+                    strokeWidth={1.5}
+                  />
+                )}
+                <Line 
+                  type="monotone" 
+                  dataKey="views" 
+                  name="Reel Views" 
+                  stroke="#ff6b2b" 
+                  strokeWidth={2.5} 
+                  dot={{ r: 4, fill: '#ff6b2b', strokeWidth: 0 }}
+                  activeDot={{ r: 6, fill: '#ff6b2b' }}
+                />
+              </LineChart>
+            </ResponsiveContainer>
+          </div>
+        </CardContent>
+      </Card>
+
       {/* 2-Column Charts */}
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
         {/* Chart 1: Pipeline Production Volume Over Time (2 cols) */}
@@ -354,25 +484,43 @@ export default function AnalyticsPage() {
                 <tr>
                   <th className="p-3 pl-6">Video Title</th>
                   <th className="p-3">Status</th>
+                  <th className="p-3">30d Benchmark</th>
                   <th className="p-3">Publish Slot</th>
                   <th className="p-3 pr-6 text-right">Destination</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60 font-sans">
-                {videos.slice(0, 5).map((v) => (
-                  <tr key={v.id} className="hover:bg-surface-elevated/40 transition-colors">
-                    <td className="p-3 pl-6 font-medium text-text max-w-sm truncate">
-                      {v.title || 'Untitled Video'}
-                    </td>
-                    <td className="p-3 whitespace-nowrap">
-                      <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold uppercase ${
-                        v.status === 'published' ? 'bg-success/15 text-success' :
-                        v.status === 'failed' ? 'bg-danger/15 text-danger' :
-                        'bg-warning/15 text-warning'
-                      }`}>
-                        {v.status || 'Pending'}
-                      </span>
-                    </td>
+                {videos.slice(0, 5).map((v) => {
+                  const trendMatch = trendsData?.trends?.find(t => t.video_id === v.id || t.title === v.title);
+                  return (
+                    <tr key={v.id} className="hover:bg-surface-elevated/40 transition-colors">
+                      <td className="p-3 pl-6 font-medium text-text max-w-sm truncate">
+                        {v.title || 'Untitled Video'}
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        <span className={`text-[10px] font-mono px-2 py-0.5 rounded-full font-semibold uppercase ${
+                          v.status === 'published' ? 'bg-success/15 text-success' :
+                          v.status === 'failed' ? 'bg-danger/15 text-danger' :
+                          'bg-warning/15 text-warning'
+                        }`}>
+                          {v.status || 'Pending'}
+                        </span>
+                      </td>
+                      <td className="p-3 whitespace-nowrap">
+                        {trendMatch?.performance === 'overperforming' ? (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase bg-success/15 text-success inline-flex items-center gap-1">
+                            <TrendingUp className="w-3 h-3" /> +{trendMatch.diff_pct}%
+                          </span>
+                        ) : trendMatch?.performance === 'underperforming' ? (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase bg-danger/15 text-danger inline-flex items-center gap-1">
+                            <TrendingDown className="w-3 h-3" /> {trendMatch.diff_pct}%
+                          </span>
+                        ) : (
+                          <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-medium uppercase bg-surface-elevated/80 text-text-muted">
+                            {trendMatch ? `${trendMatch.diff_pct >= 0 ? '+' : ''}${trendMatch.diff_pct}%` : 'Baseline'}
+                          </span>
+                        )}
+                      </td>
                     <td className="p-3 whitespace-nowrap font-mono text-text-muted text-[11px]">
                       {v.schedule_time || v.scheduled_time 
                         ? format(new Date(v.schedule_time || v.scheduled_time), 'MMM d, h:mm a')
@@ -393,7 +541,8 @@ export default function AnalyticsPage() {
                       )}
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>

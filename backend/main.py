@@ -38,6 +38,7 @@ from backend.schemas import (
     HighlightItem,
     DuplicateCheckRequest,
     DuplicateCheckResponse,
+    AnalyticsTrendsResponse,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1367,6 +1368,17 @@ async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
             status_code=500,
             detail=f"Duplicate check failed: {str(exc)}"
         )
+
+
+@app.get("/api/dashboard/analytics/trends", summary="Channel Historical Trend Comparison & Rolling Averages", response_model=AnalyticsTrendsResponse)
+async def get_channel_trends_endpoint(days: int = 30):
+    """
+    Computes 30-day channel rolling averages vs individual video metrics.
+    Flags each video as overperforming, average, or underperforming.
+    """
+    from backend.services.analytics_trends import calculate_channel_trends
+    days_bounded = max(7, min(days, 90))
+    return await asyncio.to_thread(calculate_channel_trends, days=days_bounded)
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")

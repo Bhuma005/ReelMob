@@ -212,3 +212,32 @@ class DuplicateCheckResponse(BaseModel):
     hash: str
     matches: List[DuplicateMatch] = []
 
+
+class TrendSummary(BaseModel):
+    days: int
+    total_videos: int
+    rolling_avg_views: float
+    rolling_avg_likes: float
+    rolling_avg_engagement_rate: float
+    overperforming_count: int
+    underperforming_count: int
+    average_count: int
+
+
+class TrendItem(BaseModel):
+    date: str
+    iso_date: str
+    video_id: str
+    title: str
+    views: int
+    likes: int
+    rolling_avg_views: float
+    diff_pct: float
+    performance: Literal["overperforming", "average", "underperforming"]
+
+
+class AnalyticsTrendsResponse(BaseModel):
+    summary: TrendSummary
+    trends: List[TrendItem]
+
+
