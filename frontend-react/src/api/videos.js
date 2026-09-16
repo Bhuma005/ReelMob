@@ -1,4 +1,4 @@
-import { API_BASE } from './client';
+import { API_BASE, fetchApi } from './client';
 
 export const videosApi = {
   downloadVideo: async (url, format_id) => {
@@ -19,6 +19,15 @@ export const videosApi = {
     if (!res.ok) throw new Error("Thumbnail download failed");
     return res;
   },
+  getHighlights: (videoPath, url, options = {}) => fetchApi('/api/video/highlights', {
+    method: 'POST',
+    body: JSON.stringify({ video_path: videoPath, url, ...options })
+  }),
+  getHighlightStatus: (jobId) => fetchApi(`/api/video/highlights/status/${jobId}`),
+  checkDuplicate: (videoPath, threshold = 10) => fetchApi('/api/video/check-duplicate', {
+    method: 'POST',
+    body: JSON.stringify({ video_path: videoPath, threshold })
+  }),
   // Handles the actual browser download action
   handleFileDownload: (response) => {
     const disposition = response.headers.get('content-disposition');
@@ -40,3 +49,4 @@ export const videosApi = {
     });
   }
 };
+

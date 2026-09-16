@@ -19,4 +19,5 @@ export const dashboardApi = {
     body: JSON.stringify({ ratio })
   }),
   publishVideo: (id) => fetchApi(`/api/dashboard/videos/${id}/publish`, { method: 'POST' }),
+  getTrends: (days = 30) => fetchApi(`/api/dashboard/analytics/trends?days=${days}`),
 };

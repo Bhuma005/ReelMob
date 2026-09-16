@@ -14,9 +14,11 @@ import { toast } from 'sonner';
 import { 
   Loader2, Download, Wand2, MonitorPlay, Check, Sparkles, 
   CheckCircle2, RotateCcw, XCircle, RefreshCw,
-  Film, Copy, ShieldCheck
+  Film, Copy, ShieldCheck, Scissors, AlertTriangle
 } from 'lucide-react';
 import { cn } from '../lib/utils';
+import { VideoEditorModal } from '../components/video/VideoEditorModal';
+
 
 // Zod Schema for Video URL Validation
 const urlSchema = z.object({
@@ -39,6 +41,16 @@ export default function CreateReelPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isAccepted, setIsAccepted] = useState(false);
   const [activeFormatId, setActiveFormatId] = useState(null);
+
+  // Video Editor modal state
+  const [isEditorOpen, setIsEditorOpen] = useState(false);
+  const [editorTrim, setEditorTrim] = useState(null);
+  const [editorVideoPath, setEditorVideoPath] = useState('');
+
+  // AI Multi-Clip Highlight Detection state
+  const [highlightClips, setHighlightClips] = useState([]);
+  const [isDetectingHighlights, setIsDetectingHighlights] = useState(false);
+  const highlightPollRef = useRef(null);
 
   const pollTimerRef = useRef(null);
   const stopwatchRef = useRef(null);
@@ -67,7 +79,83 @@ export default function CreateReelPage() {
       clearInterval(stopwatchRef.current);
       stopwatchRef.current = null;
     }
+    if (highlightPollRef.current) {
+      clearInterval(highlightPollRef.current);
+      highlightPollRef.current = null;
+    }
   };
+
+  const triggerHighlightDetection = async () => {
+    setIsDetectingHighlights(true);
+    try {
+      const res = await videosApi.getHighlights(store.metadata?.video_path || '', store.url);
+      if (!res?.job_id) {
+        toast.error("Failed to start highlight detection");
+        setIsDetectingHighlights(false);
+        return;
+      }
+
+      const jobId = res.job_id;
+      let polls = 0;
+      if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+
+      highlightPollRef.current = setInterval(async () => {
+        polls++;
+        if (polls > 60) {
+          if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+          setIsDetectingHighlights(false);
+          toast.error("Highlight analysis timed out");
+          return;
+        }
+
+        try {
+          const statusRes = await videosApi.getHighlightStatus(jobId);
+          if (statusRes.status === 'COMPLETED') {
+            if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+            setIsDetectingHighlights(false);
+            setHighlightClips(statusRes.highlights || []);
+            toast.success(`Found ${statusRes.highlights?.length || 0} candidate highlights!`);
+          } else if (statusRes.status === 'FAILED') {
+            if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+            setIsDetectingHighlights(false);
+            toast.error(statusRes.error || "Highlight detection failed");
+          }
+        } catch (e) {
+          console.warn("Poll highlight error:", e);
+        }
+      }, 1500);
+    } catch (err) {
+      setIsDetectingHighlights(false);
+      toast.error(err.message || "Failed to analyze highlights");
+    }
+  };
+
+  const handleOpenEditorForClip = (clip) => {
+    setEditorTrim({ start: clip.start, end: clip.end });
+    setEditorVideoPath(store.metadata?.video_path || 'source_video.mp4');
+    setIsEditorOpen(true);
+  };
+
+  // Duplicate Video Detection state
+  const [duplicateMatch, setDuplicateMatch] = useState(null);
+  const [isDismissedDuplicate, setIsDismissedDuplicate] = useState(false);
+
+  const checkDuplicateVideo = async (videoPathOverride) => {
+    const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
+    if (!pathToUse) return;
+    try {
+      const res = await videosApi.checkDuplicate(pathToUse);
+      if (res?.is_duplicate && res.matches?.length > 0) {
+        setDuplicateMatch(res.matches[0]);
+        setIsDismissedDuplicate(false);
+      } else {
+        setDuplicateMatch(null);
+      }
+    } catch (e) {
+      console.debug("Duplicate check skipped or errored:", e);
+    }
+  };
+
 
   useEffect(() => {
     return () => stopPolling();
@@ -396,6 +484,62 @@ export default function CreateReelPage() {
           transition={{ duration: 0.3 }}
           className="grid gap-6"
         >
+          {/* Non-blocking Duplicate Warning Card */}
+          {duplicateMatch && !isDismissedDuplicate && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-4 rounded-xl border border-warning/40 bg-warning/10 text-text space-y-2 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-warning/20 text-warning shrink-0 mt-0.5">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-text">
+                        Potential Duplicate Video Detected
+                      </h4>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-warning/20 text-warning border border-warning/30">
+                        {duplicateMatch.similarity_pct}% Visual Similarity
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-muted mt-1 leading-relaxed">
+                      This video has high visual similarity with an existing video in your library:{' '}
+                      <span className="font-semibold text-text">"{duplicateMatch.title}"</span>.
+                      Publishing near-identical videos can suppress reach and engagement.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsDismissedDuplicate(true)}
+                  className="text-text-muted hover:text-text text-xs px-2 py-1 rounded cursor-pointer transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2 pl-11">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditorTrim(null);
+                    setEditorVideoPath(store.metadata?.video_path || 'source_video.mp4');
+                    setIsEditorOpen(true);
+                  }}
+                  className="text-xs h-7 border-warning/30 text-warning hover:bg-warning/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Scissors className="w-3.5 h-3.5" />
+                  Differentiate in Video Studio
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
           {/* Top Section: Media Preview & AI Assistant Side-by-Side */}
           <div className="grid md:grid-cols-[300px_1fr] gap-6 items-start">
             {/* Left Card: Thumbnail & Quick Actions */}
@@ -832,6 +976,108 @@ export default function CreateReelPage() {
             </div>
           </div>
 
+          {/* AI Multi-Clip Highlight Detection Strip */}
+          <Card className="bg-surface border-border overflow-hidden">
+            <CardHeader className="py-3 px-5 border-b border-border bg-surface-elevated/40 flex flex-row items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Scissors className="w-4 h-4 text-accent" />
+                <CardTitle className="text-xs font-mono font-bold tracking-wider text-text uppercase">
+                  AI Multi-Clip Highlights {highlightClips.length > 0 ? `(${highlightClips.length} Suggested)` : ''}
+                </CardTitle>
+              </div>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={triggerHighlightDetection}
+                disabled={isDetectingHighlights}
+                className="text-xs h-7 gap-1.5 cursor-pointer"
+              >
+                {isDetectingHighlights ? (
+                  <>
+                    <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+                    <span>Analyzing Scenes...</span>
+                  </>
+                ) : (
+                  <>
+                    <Sparkles className="w-3.5 h-3.5 text-accent" />
+                    <span>{highlightClips.length > 0 ? 'Re-scan Moments' : 'Detect Best Moments'}</span>
+                  </>
+                )}
+              </Button>
+            </CardHeader>
+            <CardContent className="p-5">
+              {highlightClips.length === 0 ? (
+                <div className="text-center py-6 border border-dashed border-border rounded-lg bg-surface-elevated/20">
+                  <Scissors className="w-8 h-8 mx-auto text-text-muted/40 mb-2" />
+                  <p className="text-xs text-text font-medium">Discover viral 15–60s candidate short clips automatically</p>
+                  <p className="text-[11px] text-text-muted max-w-md mx-auto mt-1 mb-3">
+                    Scene understanding evaluates visual hooks and pacing to isolate high-retention moments ready to trim into Shorts.
+                  </p>
+                  <Button
+                    size="sm"
+                    onClick={triggerHighlightDetection}
+                    disabled={isDetectingHighlights}
+                    className="text-xs font-semibold bg-accent text-accent-foreground cursor-pointer"
+                  >
+                    {isDetectingHighlights ? (
+                      <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
+                    ) : (
+                      <Sparkles className="w-3.5 h-3.5 mr-1.5" />
+                    )}
+                    Scan Video for Highlights
+                  </Button>
+                </div>
+              ) : (
+                <div className="grid sm:grid-cols-2 md:grid-cols-3 gap-4">
+                  {highlightClips.map((clip, idx) => {
+                    const durationSec = Math.round(clip.end - clip.start);
+                    const formatTime = (sec) => {
+                      const m = Math.floor(sec / 60);
+                      const s = Math.floor(sec % 60);
+                      return `${m}:${s < 10 ? '0' : ''}${s}`;
+                    };
+                    return (
+                      <div
+                        key={idx}
+                        className="p-4 rounded-lg bg-surface-elevated/60 border border-border hover:border-accent/50 transition-all flex flex-col justify-between space-y-3"
+                      >
+                        <div>
+                          <div className="flex items-center justify-between mb-2">
+                            <span className="text-[10px] font-mono font-bold uppercase tracking-wider text-accent bg-accent/10 px-2 py-0.5 rounded border border-accent/20">
+                              Highlight #{idx + 1}
+                            </span>
+                            <span className="text-[11px] font-mono font-bold text-success flex items-center gap-1">
+                              <ShieldCheck className="w-3.5 h-3.5" />
+                              {Math.round((clip.confidence || 0.85) * 100)}% match
+                            </span>
+                          </div>
+                          <div className="text-sm font-bold text-text mb-1 flex items-center gap-2">
+                            <span>{formatTime(clip.start)} – {formatTime(clip.end)}</span>
+                            <span className="text-xs text-text-muted font-normal font-mono">({durationSec}s)</span>
+                          </div>
+                          <p className="text-xs text-text-muted line-clamp-3 leading-relaxed">
+                            {clip.reason}
+                          </p>
+                        </div>
+
+                        <div className="pt-3 border-t border-border/60">
+                          <Button
+                            size="sm"
+                            onClick={() => handleOpenEditorForClip(clip)}
+                            className="w-full text-xs font-semibold bg-accent/10 hover:bg-accent text-accent hover:text-accent-foreground border border-accent/20 cursor-pointer transition-colors flex items-center justify-center gap-1.5"
+                          >
+                            <Scissors className="w-3.5 h-3.5" />
+                            Trim in Video Studio
+                          </Button>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Visual Format & Quality Picker Cards */}
           <Card className="bg-surface border-border">
             <CardHeader className="py-4 px-6 border-b border-border">
@@ -914,6 +1160,19 @@ export default function CreateReelPage() {
           </Card>
         </motion.div>
       )}
+
+      {/* Video Studio Editor Modal */}
+      <VideoEditorModal
+        isOpen={isEditorOpen}
+        onClose={() => setIsEditorOpen(false)}
+        videoPath={editorVideoPath}
+        videoUrl={store.url}
+        initialTrim={editorTrim}
+        onSaveSuccess={() => {
+          toast.success("Edited video saved successfully!");
+          setIsEditorOpen(false);
+        }}
+      />
     </div>
   );
 }

@@ -13,6 +13,7 @@ export function VideoEditorModal({
   videoPath,
   videoUrl,
   onSaveSuccess,
+  initialTrim = null,
 }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -47,9 +48,16 @@ export function VideoEditorModal({
   useEffect(() => {
     if (isOpen) {
       setIsPlaying(false);
-      setCurrentTime(0);
+      const startSec = initialTrim?.start ?? 0;
+      setCurrentTime(startSec);
+      if (initialTrim?.start != null) {
+        setTrimStart(initialTrim.start);
+      }
+      if (initialTrim?.end != null) {
+        setTrimEnd(initialTrim.end);
+      }
     }
-  }, [isOpen]);
+  }, [isOpen, initialTrim]);
 
   if (!isOpen) return null;
 
@@ -57,7 +65,16 @@ export function VideoEditorModal({
     if (videoRef.current) {
       const dur = videoRef.current.duration || 0;
       setDuration(dur);
-      setTrimEnd(dur);
+      if (initialTrim?.end != null && initialTrim.end <= dur) {
+        setTrimEnd(initialTrim.end);
+      } else if (trimEnd === 0 || trimEnd > dur) {
+        setTrimEnd(dur);
+      }
+      if (initialTrim?.start != null) {
+        const boundedStart = Math.min(initialTrim.start, dur);
+        setTrimStart(boundedStart);
+        videoRef.current.currentTime = boundedStart;
+      }
     }
   };
 

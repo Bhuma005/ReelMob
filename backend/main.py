@@ -8,7 +8,7 @@ import re
 import urllib.request
 import tempfile
 import shutil
-from typing import Optional, List, Dict
+from typing import Optional, List, Dict, Any
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
@@ -33,6 +33,12 @@ from backend.schemas import (
     AnalyzeRequest,
     ConvertRequest,
     EditVideoRequest,
+    HighlightRequest,
+    HighlightResponse,
+    HighlightItem,
+    DuplicateCheckRequest,
+    DuplicateCheckResponse,
+    AnalyticsTrendsResponse,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1234,6 +1240,145 @@ async def edit_video_endpoint(req: EditVideoRequest):
             status_code=500,
             detail=f"Video processing failed: {str(exc)}"
         )
+
+
+# In-memory store for async highlight detection jobs
+HIGHLIGHT_JOBS: Dict[str, Dict[str, Any]] = {}
+
+def execute_highlight_job(
+    job_id: str,
+    video_path: Optional[str],
+    target_duration_min: float,
+    target_duration_max: float,
+    num_clips: int,
+    url: Optional[str]
+):
+    from backend.services.highlight_detector import detect_highlights
+
+    job = HIGHLIGHT_JOBS.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "PROCESSING"
+    try:
+        path_to_use = video_path
+        if not path_to_use:
+            downloads_dir = "downloads"
+            if os.path.exists(downloads_dir):
+                files = [
+                    os.path.join(downloads_dir, f)
+                    for f in os.listdir(downloads_dir)
+                    if f.lower().endswith(('.mp4', '.mkv', '.webm', '.mov'))
+                ]
+                if files:
+                    files.sort(key=os.path.getmtime, reverse=True)
+                    path_to_use = files[0]
+
+        if not path_to_use:
+            raise ValueError("No video file specified or found in downloads.")
+
+        clips = detect_highlights(
+            video_path=path_to_use,
+            target_duration_min=target_duration_min,
+            target_duration_max=target_duration_max,
+            num_clips=num_clips,
+            url=url
+        )
+        job["status"] = "COMPLETED"
+        job["highlights"] = clips
+    except Exception as exc:
+        logger.error(f"Highlight job {job_id} failed: {exc}", exc_info=True)
+        job["status"] = "FAILED"
+        job["error"] = str(exc)
+
+
+@app.post("/api/video/highlights", summary="Multi-Clip Highlight Detection (Async Job)")
+async def create_highlights_job(req: HighlightRequest, background_tasks: BackgroundTasks):
+    job_id = str(uuid.uuid4())
+    HIGHLIGHT_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "PENDING",
+        "highlights": None,
+        "error": None,
+        "created_at": datetime.now().isoformat()
+    }
+    background_tasks.add_task(
+        execute_highlight_job,
+        job_id=job_id,
+        video_path=req.video_path,
+        target_duration_min=req.target_duration_min,
+        target_duration_max=req.target_duration_max,
+        num_clips=req.num_clips,
+        url=req.url
+    )
+    return {"job_id": job_id, "status": "PENDING"}
+
+
+@app.get("/api/video/highlights/status/{job_id}", summary="Get Highlight Job Status", response_model=HighlightResponse)
+async def get_highlight_job_status(job_id: str):
+    clean_id = sanitize_filename_or_id(job_id)
+    job = HIGHLIGHT_JOBS.get(clean_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Highlight job not found")
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "highlights": job.get("highlights"),
+        "error": job.get("error")
+    }
+
+
+@app.post("/api/video/check-duplicate", summary="Check for Duplicate / Near-Duplicate Videos", response_model=DuplicateCheckResponse)
+async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
+    """
+    Computes perceptual difference hash (dHash) for the target video
+    and compares against the creator's video library using Hamming distance.
+    Flags duplicates if distance <= threshold (default 10 / 64 bits).
+    """
+    from backend.services.duplicate_detector import check_video_duplicate
+
+    clean_path = sanitize_filename_or_id(req.video_path)
+    candidate_paths = [
+        os.path.join("downloads", clean_path),
+        clean_path,
+        os.path.join("downloads", os.path.basename(clean_path)),
+    ]
+    input_file = None
+    for p in candidate_paths:
+        if os.path.exists(p) and os.path.isfile(p):
+            input_file = p
+            break
+
+    if not input_file:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Video file not found for path: {clean_path}"
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            check_video_duplicate,
+            video_path=input_file,
+            threshold=req.threshold
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"Duplicate check failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Duplicate check failed: {str(exc)}"
+        )
+
+
+@app.get("/api/dashboard/analytics/trends", summary="Channel Historical Trend Comparison & Rolling Averages", response_model=AnalyticsTrendsResponse)
+async def get_channel_trends_endpoint(days: int = 30):
+    """
+    Computes 30-day channel rolling averages vs individual video metrics.
+    Flags each video as overperforming, average, or underperforming.
+    """
+    from backend.services.analytics_trends import calculate_channel_trends
+    days_bounded = max(7, min(days, 90))
+    return await asyncio.to_thread(calculate_channel_trends, days=days_bounded)
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")
