@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useEffect } from 'react';
 import { AlertTriangle, AlertCircle, HelpCircle } from 'lucide-react';
 import { Button } from './Button';
 
@@ -14,6 +14,17 @@ export function ConfirmDialog({
   onConfirm,
   onClose,
 }) {
+  useEffect(() => {
+    if (!isOpen) return;
+    const handleKeyDown = (e) => {
+      if (e.key === 'Escape') {
+        onClose();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [isOpen, onClose]);
+
   if (!isOpen) return null;
 
   const IconComponent = 
@@ -30,6 +41,7 @@ export function ConfirmDialog({
         className="w-full max-w-md bg-surface border border-border rounded-xl shadow-2xl overflow-hidden"
         role="dialog"
         aria-modal="true"
+        aria-labelledby="confirm-dialog-title"
       >
         <div className="p-6">
           <div className="flex items-start gap-4">
@@ -37,7 +49,7 @@ export function ConfirmDialog({
               <IconComponent className="w-5 h-5" />
             </div>
             <div className="flex-1 min-w-0">
-              <h3 className="text-base font-semibold text-text">{title}</h3>
+              <h3 id="confirm-dialog-title" className="text-base font-semibold text-text">{title}</h3>
               <p className="mt-1.5 text-sm text-text-muted leading-relaxed">{description}</p>
             </div>
           </div>
