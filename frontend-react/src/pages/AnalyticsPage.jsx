@@ -11,7 +11,7 @@ import { Button } from '../components/ui/Button';
 import { SkeletonMetric } from '../components/ui/Skeleton';
 import { 
   Activity, CheckCircle2, Clock, AlertCircle, Sparkles, ExternalLink, ArrowUpRight,
-  TrendingUp, TrendingDown, Target, Zap
+  TrendingUp, TrendingDown, Target, Zap, Tag
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -64,6 +64,11 @@ export default function AnalyticsPage() {
   const { data: trendsData, isLoading: trendsLoading } = useQuery({
     queryKey: ['dashboardTrends', timeRange],
     queryFn: () => dashboardApi.getTrends(timeRange === '7d' ? 7 : 30),
+  });
+
+  const { data: tagAnalyticsData, isLoading: tagAnalyticsLoading } = useQuery({
+    queryKey: ['dashboardAnalyticsTags', timeRange],
+    queryFn: () => dashboardApi.getTagAnalytics(timeRange === '7d' ? 7 : 30),
   });
 
 
@@ -455,6 +460,102 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       </div>
+
+      {/* Performance by Tag Card */}
+      <Card className="bg-surface border-border">
+        <CardHeader className="py-4 px-6 border-b border-border flex flex-row items-center justify-between">
+          <div>
+            <CardTitle className="text-sm font-semibold text-text flex items-center gap-2">
+              <Tag className="w-4 h-4 text-accent" />
+              Performance by Content Tag
+            </CardTitle>
+            <CardDescription className="text-xs text-text-muted mt-0.5">
+              Average viewership and engagement efficiency benchmarked against library baseline ({timeRange === '7d' ? '7 days' : '30 days'})
+            </CardDescription>
+          </div>
+          {tagAnalyticsData?.tags?.length > 0 && (
+            <span className="text-xs font-mono text-accent bg-accent/10 px-2.5 py-1 rounded-full border border-accent/20">
+              {tagAnalyticsData.tags.length} active {tagAnalyticsData.tags.length === 1 ? 'tag' : 'tags'}
+            </span>
+          )}
+        </CardHeader>
+
+        <CardContent className="p-0">
+          {tagAnalyticsLoading ? (
+            <div className="p-8 text-center text-xs text-text-muted font-mono animate-pulse">
+              Computing tag performance benchmarks...
+            </div>
+          ) : !tagAnalyticsData?.tags || tagAnalyticsData.tags.length === 0 ? (
+            <div className="p-8 text-center flex flex-col items-center justify-center">
+              <Tag className="w-8 h-8 text-text-muted opacity-30 mb-2" />
+              <p className="text-xs font-semibold text-text">No tagged videos found</p>
+              <p className="text-xs text-text-muted max-w-sm mt-1">
+                Add tags to your videos in the Content Library to analyze view distributions and engagement patterns by topic.
+              </p>
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => navigate('/library')}
+                className="mt-3 text-xs cursor-pointer"
+              >
+                Go to Library
+              </Button>
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-xs">
+                <thead className="bg-surface-elevated/70 border-b border-border text-text-muted font-mono uppercase text-[10px]">
+                  <tr>
+                    <th className="p-3 pl-6">Tag Name</th>
+                    <th className="p-3">Videos</th>
+                    <th className="p-3">Avg Views</th>
+                    <th className="p-3">Avg Engagement</th>
+                    <th className="p-3 pr-6 text-right">Benchmark Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border/60 font-sans">
+                  {tagAnalyticsData.tags.map((item) => {
+                    const statusBadge = 
+                      item.benchmark_status === 'overperforming' ? (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase bg-success/15 text-success inline-flex items-center gap-1">
+                          <TrendingUp className="w-3 h-3" /> Overperforming
+                        </span>
+                      ) : item.benchmark_status === 'underperforming' ? (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-bold uppercase bg-danger/15 text-danger inline-flex items-center gap-1">
+                          <TrendingDown className="w-3 h-3" /> Underperforming
+                        </span>
+                      ) : (
+                        <span className="text-[10px] font-mono px-2 py-0.5 rounded-full font-medium uppercase bg-surface-elevated/80 text-text-muted">
+                          Average
+                        </span>
+                      );
+
+                    return (
+                      <tr key={item.tag} className="hover:bg-surface-elevated/40 transition-colors">
+                        <td className="p-3 pl-6 font-mono font-semibold text-accent">
+                          #{item.tag}
+                        </td>
+                        <td className="p-3 font-mono text-text">
+                          {item.video_count}
+                        </td>
+                        <td className="p-3 font-mono text-text font-medium">
+                          {Math.round(item.avg_views).toLocaleString()}
+                        </td>
+                        <td className="p-3 font-mono text-text-muted">
+                          {item.avg_engagement_rate != null ? `${(item.avg_engagement_rate * 100).toFixed(1)}%` : '—'}
+                        </td>
+                        <td className="p-3 pr-6 text-right whitespace-nowrap">
+                          {statusBadge}
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* Top Videos Ingested Table */}
       <Card className="bg-surface border-border">

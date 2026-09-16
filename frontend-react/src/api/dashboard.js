@@ -20,4 +20,10 @@ export const dashboardApi = {
   }),
   publishVideo: (id) => fetchApi(`/api/dashboard/videos/${id}/publish`, { method: 'POST' }),
   getTrends: (days = 30) => fetchApi(`/api/dashboard/analytics/trends?days=${days}`),
+  updateVideoTags: (id, tags) => fetchApi(`/api/dashboard/videos/${id}/tags`, {
+    method: 'PATCH',
+    body: JSON.stringify({ tags })
+  }),
+  getTagAnalytics: (days = 30) => fetchApi(`/api/dashboard/analytics/tags?days=${days}`),
+  searchVideos: (q) => fetchApi(`/api/dashboard/search?q=${encodeURIComponent(q)}`),
 };

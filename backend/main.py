@@ -39,6 +39,8 @@ from backend.schemas import (
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     AnalyticsTrendsResponse,
+    UpdateVideoTagsRequest,
+    TagPerformanceResponse,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1379,6 +1381,46 @@ async def get_channel_trends_endpoint(days: int = 30):
     from backend.services.analytics_trends import calculate_channel_trends
     days_bounded = max(7, min(days, 90))
     return await asyncio.to_thread(calculate_channel_trends, days=days_bounded)
+
+
+# In-memory tag cache for offline/test mode
+LOCAL_VIDEO_TAGS: Dict[str, List[str]] = {}
+
+@app.patch("/api/dashboard/videos/{video_id}/tags", summary="Update Video Tags")
+async def update_video_tags_endpoint(video_id: str, req: UpdateVideoTagsRequest):
+    """
+    Updates custom tags for a video in the creator's library.
+    Validates tag naming, length, and cardinality.
+    """
+    clean_id = sanitize_filename_or_id(video_id)
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="Invalid video_id")
+
+    LOCAL_VIDEO_TAGS[clean_id] = req.tags
+
+    # Attempt Supabase update
+    try:
+        from cloud.cloud_auth import get_supabase_client
+        sb = get_supabase_client()
+        sb.table("video_library").update({"tags": req.tags}).eq("id", clean_id).execute()
+    except Exception as exc:
+        logger.debug(f"Supabase tag update skipped or failed: {exc}")
+
+    return {
+        "status": "success",
+        "id": clean_id,
+        "tags": req.tags
+    }
+
+
+@app.get("/api/dashboard/analytics/tags", summary="Tag Performance Analytics", response_model=TagPerformanceResponse)
+async def get_tag_performance_endpoint(days: int = 30):
+    """
+    Computes performance by tag (average views, likes, engagement rate, benchmark status).
+    """
+    from backend.services.analytics_trends import calculate_performance_by_tag
+    days_bounded = max(7, min(days, 90))
+    return await asyncio.to_thread(calculate_performance_by_tag, days=days_bounded)
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
 import { motion } from 'framer-motion';
 import { dashboardApi } from '../api/dashboard';
@@ -13,11 +13,117 @@ import { VideoEditorModal } from '../components/video/VideoEditorModal';
 import { 
   Trash2, Film, RefreshCw, CheckCircle2, AlertTriangle, CloudOff, 
   Search, ChevronLeft, ChevronRight, ExternalLink, Play, 
-  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors
+  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors, Tag
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+
+function InlineTagEditor({ videoId, tags = [], onUpdateTags }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleAddTag = async () => {
+    const trimmed = tagInput.trim().toLowerCase();
+    if (!trimmed) {
+      setIsEditing(false);
+      return;
+    }
+    if (!/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
+      toast.error('Tags can only contain alphanumeric characters, underscores, and dashes');
+      return;
+    }
+    if (trimmed.length > 30) {
+      toast.error('Tag must be 30 characters or fewer');
+      return;
+    }
+    if (tags.includes(trimmed)) {
+      setTagInput('');
+      setIsEditing(false);
+      return;
+    }
+    if (tags.length >= 15) {
+      toast.error('Maximum 15 tags per video');
+      return;
+    }
+
+    const nextTags = [...tags, trimmed];
+    setIsSaving(true);
+    try {
+      await onUpdateTags(videoId, nextTags);
+      setTagInput('');
+      setIsEditing(false);
+    } catch (err) {
+      toast.error('Failed to add tag: ' + (err.message || 'Network error'));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRemoveTag = async (tagToRemove, e) => {
+    e.stopPropagation();
+    const nextTags = tags.filter(t => t !== tagToRemove);
+    try {
+      await onUpdateTags(videoId, nextTags);
+    } catch (err) {
+      toast.error('Failed to remove tag: ' + (err.message || 'Network error'));
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
+      {tags.map((t) => (
+        <span
+          key={t}
+          className="inline-flex items-center gap-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted border border-border group/tag hover:border-accent/50"
+        >
+          #{t}
+          <button
+            type="button"
+            onClick={(e) => handleRemoveTag(t, e)}
+            className="hover:text-danger opacity-60 group-hover/tag:opacity-100 transition-opacity ml-0.5 cursor-pointer leading-none"
+            title={`Remove #${t}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+
+      {isEditing ? (
+        <input
+          type="text"
+          autoFocus
+          disabled={isSaving}
+          value={tagInput}
+          onChange={(e) => setTagInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleAddTag();
+            } else if (e.key === 'Escape') {
+              setIsEditing(false);
+              setTagInput('');
+            }
+          }}
+          onBlur={handleAddTag}
+          placeholder="tag..."
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface border border-accent text-text w-16 focus:outline-none"
+        />
+      ) : (
+        tags.length < 15 && (
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded text-text-muted hover:text-accent hover:bg-surface-elevated border border-dashed border-border transition-colors cursor-pointer"
+          >
+            + tag
+          </button>
+        )
+      )}
+    </div>
+  );
+}
 
 export default function LibraryPage() {
   const queryClient = useQueryClient();
@@ -123,9 +229,47 @@ export default function LibraryPage() {
     onError: (err) => toast.error(err.message || 'Failed to convert video')
   });
 
-  const videos = videosData?.videos || [];
+  const [selectedTagFilter, setSelectedTagFilter] = useState(null);
+
+  const tagMutation = useMutation({
+    mutationFn: ({ id, tags }) => dashboardApi.updateVideoTags(id, tags),
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(['dashboardVideos', page, limit, activeStatus, debouncedSearch], (old) => {
+        if (!old?.videos) return old;
+        return {
+          ...old,
+          videos: old.videos.map(v => v.id === variables.id ? { ...v, tags: variables.tags } : v)
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['dashboardVideos'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboardAnalyticsTags'] });
+      toast.success('Tags updated');
+    },
+    onError: (err) => toast.error(err.message || 'Failed to update tags')
+  });
+
+  const handleUpdateTags = async (id, tags) => {
+    return tagMutation.mutateAsync({ id, tags });
+  };
+
+  const rawVideos = videosData?.videos || [];
   const totalPages = videosData?.total_pages || 1;
   const totalCount = videosData?.total || 0;
+
+  const availableTags = useMemo(() => {
+    const set = new Set();
+    rawVideos.forEach(v => {
+      if (Array.isArray(v.tags)) {
+        v.tags.forEach(t => set.add(t));
+      }
+    });
+    return Array.from(set).sort();
+  }, [rawVideos]);
+
+  const videos = useMemo(() => {
+    if (!selectedTagFilter) return rawVideos;
+    return rawVideos.filter(v => Array.isArray(v.tags) && v.tags.includes(selectedTagFilter));
+  }, [rawVideos, selectedTagFilter]);
 
   const statusTabs = [
     { key: 'all', label: 'All Videos' },
@@ -315,6 +459,39 @@ export default function LibraryPage() {
         )}
       </div>
 
+      {/* Tag Filter Chips */}
+      {availableTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 p-2 bg-surface/60 rounded-lg border border-border/80">
+          <span className="text-[11px] font-mono text-text-muted flex items-center gap-1 mr-1">
+            <Tag className="w-3 h-3 text-accent" /> Filter by Tag:
+          </span>
+          {availableTags.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setSelectedTagFilter(prev => prev === t ? null : t)}
+              className={cn(
+                "text-[10px] font-mono px-2 py-0.5 rounded-full border transition-all cursor-pointer",
+                selectedTagFilter === t
+                  ? "bg-accent text-accent-foreground border-accent font-semibold"
+                  : "bg-surface-elevated text-text-muted border-border hover:border-accent/40"
+              )}
+            >
+              #{t}
+            </button>
+          ))}
+          {selectedTagFilter && (
+            <button
+              type="button"
+              onClick={() => setSelectedTagFilter(null)}
+              className="text-[10px] font-mono text-text-muted hover:text-text cursor-pointer underline ml-1"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+      )}
+
       {/* Main Content: Loading, Empty, Grid or Table */}
       {isLoading ? (
         viewMode === 'grid' ? (
@@ -431,6 +608,12 @@ export default function LibraryPage() {
                         {format(new Date(v.schedule_time || v.scheduled_time), 'MMM d, h:mm a')}
                       </p>
                     )}
+
+                    <InlineTagEditor
+                      videoId={v.id}
+                      tags={v.tags || []}
+                      onUpdateTags={handleUpdateTags}
+                    />
                   </div>
                 </div>
 
@@ -592,6 +775,11 @@ export default function LibraryPage() {
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         )}
+                        <InlineTagEditor
+                          videoId={v.id}
+                          tags={v.tags || []}
+                          onUpdateTags={handleUpdateTags}
+                        />
                       </td>
 
                       <td className="p-3 whitespace-nowrap">

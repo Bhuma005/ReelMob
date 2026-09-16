@@ -241,3 +241,40 @@ class AnalyticsTrendsResponse(BaseModel):
     trends: List[TrendItem]
 
 
+TAG_REGEX = re.compile(r'^[a-zA-Z0-9_\-]+$')
+
+
+class UpdateVideoTagsRequest(BaseModel):
+    tags: List[str] = Field(default=[], max_length=15, description="List of unique tags (max 15)")
+
+    @field_validator('tags')
+    @classmethod
+    def validate_tags(cls, tags: List[str]) -> List[str]:
+        cleaned = []
+        for t in tags:
+            t_clean = t.strip().lower()
+            if not t_clean:
+                continue
+            if len(t_clean) > 30:
+                raise ValueError(f"Tag '{t_clean}' exceeds max length of 30 characters.")
+            if not TAG_REGEX.match(t_clean):
+                raise ValueError(f"Tag '{t_clean}' contains invalid characters. Only alphanumeric, underscores, and hyphens allowed.")
+            if t_clean not in cleaned:
+                cleaned.append(t_clean)
+        return cleaned
+
+
+class TagPerformanceItem(BaseModel):
+    tag: str
+    video_count: int
+    avg_views: float
+    avg_likes: float
+    avg_engagement_rate: float
+    benchmark_status: Literal["overperforming", "average", "underperforming"]
+
+
+class TagPerformanceResponse(BaseModel):
+    tags: List[TagPerformanceItem]
+
+
+
