@@ -1,5 +1,6 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion } from 'framer-motion';
 import { dashboardApi } from '../api/dashboard';
 import { Card } from '../components/ui/Card';
@@ -13,11 +14,206 @@ import { VideoEditorModal } from '../components/video/VideoEditorModal';
 import { 
   Trash2, Film, RefreshCw, CheckCircle2, AlertTriangle, CloudOff, 
   Search, ChevronLeft, ChevronRight, ExternalLink, Play, 
-  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors
+  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors, Tag, Download, FileText
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+
+export function getOptimizedThumbnail(url, size = 'small') {
+  if (!url) return '';
+  if (url.includes('ytimg.com') || url.includes('youtube.com')) {
+    if (size === 'small') {
+      return url.replace('maxresdefault.jpg', 'mqdefault.jpg');
+    }
+  }
+  if (size === 'small' && (url.includes('supabase.co') || url.includes('storage/v1'))) {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}width=320&quality=80`;
+  }
+  return url;
+}
+
+function InlineTagEditor({ videoId, tags = [], onUpdateTags }) {
+  const [isEditing, setIsEditing] = useState(false);
+  const [tagInput, setTagInput] = useState('');
+  const [isSaving, setIsSaving] = useState(false);
+
+  const handleAddTag = async () => {
+    const trimmed = tagInput.trim().toLowerCase();
+    if (!trimmed) {
+      setIsEditing(false);
+      return;
+    }
+    if (!/^[a-zA-Z0-9_\-]+$/.test(trimmed)) {
+      toast.error('Tags can only contain alphanumeric characters, underscores, and dashes');
+      return;
+    }
+    if (trimmed.length > 30) {
+      toast.error('Tag must be 30 characters or fewer');
+      return;
+    }
+    if (tags.includes(trimmed)) {
+      setTagInput('');
+      setIsEditing(false);
+      return;
+    }
+    if (tags.length >= 15) {
+      toast.error('Maximum 15 tags per video');
+      return;
+    }
+
+    const nextTags = [...tags, trimmed];
+    setIsSaving(true);
+    try {
+      await onUpdateTags(videoId, nextTags);
+      setTagInput('');
+      setIsEditing(false);
+    } catch (err) {
+      toast.error('Failed to add tag: ' + (err.message || 'Network error'));
+    } finally {
+      setIsSaving(false);
+    }
+  };
+
+  const handleRemoveTag = async (tagToRemove, e) => {
+    e.stopPropagation();
+    const nextTags = tags.filter(t => t !== tagToRemove);
+    try {
+      await onUpdateTags(videoId, nextTags);
+    } catch (err) {
+      toast.error('Failed to remove tag: ' + (err.message || 'Network error'));
+    }
+  };
+
+  return (
+    <div className="flex flex-wrap items-center gap-1 mt-1.5" onClick={(e) => e.stopPropagation()}>
+      {tags.map((t) => (
+        <span
+          key={t}
+          className="inline-flex items-center gap-0.5 text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface-elevated text-text-muted border border-border group/tag hover:border-accent/50"
+        >
+          #{t}
+          <button
+            type="button"
+            onClick={(e) => handleRemoveTag(t, e)}
+            className="hover:text-danger opacity-60 group-hover/tag:opacity-100 transition-opacity ml-0.5 cursor-pointer leading-none"
+            title={`Remove #${t}`}
+          >
+            ×
+          </button>
+        </span>
+      ))}
+
+      {isEditing ? (
+        <input
+          type="text"
+          autoFocus
+          disabled={isSaving}
+          value={tagInput}
+          onChange={(e) => setTagInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              e.preventDefault();
+              handleAddTag();
+            } else if (e.key === 'Escape') {
+              setIsEditing(false);
+              setTagInput('');
+            }
+          }}
+          onBlur={handleAddTag}
+          placeholder="tag..."
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded bg-surface border border-accent text-text w-16 focus:outline-none"
+        />
+      ) : (
+        tags.length < 15 && (
+          <button
+            type="button"
+            onClick={() => setIsEditing(true)}
+            className="text-[10px] font-mono px-1.5 py-0.5 rounded text-text-muted hover:text-accent hover:bg-surface-elevated border border-dashed border-border transition-colors cursor-pointer"
+          >
+            + tag
+          </button>
+        )
+      )}
+    </div>
+  );
+}
+
+function BulkTagModal({ isOpen, count, onClose, onApply }) {
+  const [tag, setTag] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const clean = tag.trim().toLowerCase();
+    if (!clean) return;
+    if (!/^[a-zA-Z0-9_\-]+$/.test(clean)) {
+      toast.error('Tags can only contain alphanumeric characters, underscores, and dashes');
+      return;
+    }
+    if (clean.length > 30) {
+      toast.error('Tag must be 30 characters or fewer');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await onApply(clean);
+      setTag('');
+      onClose();
+    } catch (err) {
+      toast.error('Failed to apply tags: ' + (err.message || 'Error'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+      <div className="w-full max-w-sm bg-surface border border-border rounded-xl p-5 space-y-4 shadow-xl">
+        <h3 className="text-sm font-semibold text-text flex items-center gap-2">
+          <Tag className="w-4 h-4 text-accent" />
+          Add Tag to {count} {count === 1 ? 'Video' : 'Videos'}
+        </h3>
+        <p className="text-xs text-text-muted">
+          Enter a tag to append to all selected videos in your library.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            type="text"
+            autoFocus
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            placeholder="e.g. viral, hook, tutorial"
+            className="w-full bg-surface-elevated border border-border rounded-lg px-3 py-2 text-xs text-text font-mono placeholder:text-text-muted focus:outline-none focus:border-accent"
+          />
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={isSubmitting || !tag.trim()}
+              className="text-xs bg-accent text-accent-foreground hover:bg-accent/90"
+            >
+              {isSubmitting ? 'Applying...' : 'Apply Tag'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
 
 export default function LibraryPage() {
   const queryClient = useQueryClient();
@@ -35,6 +231,7 @@ export default function LibraryPage() {
   const [publishingVideo, setPublishingVideo] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkTagging, setIsBulkTagging] = useState(false);
 
   const limit = viewMode === 'grid' ? 12 : 20;
 
@@ -101,6 +298,66 @@ export default function LibraryPage() {
     }
   };
 
+  const handleBulkTag = async (newTag) => {
+    if (selectedIds.length === 0) return;
+    try {
+      const updates = selectedIds.map(id => {
+        const vid = rawVideos.find(v => v.id === id);
+        const existingTags = Array.isArray(vid?.tags) ? vid.tags : [];
+        if (!existingTags.includes(newTag)) {
+          const nextTags = [...existingTags, newTag];
+          return dashboardApi.updateVideoTags(id, nextTags);
+        }
+        return Promise.resolve();
+      });
+      await Promise.all(updates);
+      queryClient.invalidateQueries({ queryKey: ['dashboardVideos'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboardAnalyticsTags'] });
+      toast.success(`Tagged ${selectedIds.length} videos with #${newTag}`);
+      setIsBulkTagging(false);
+    } catch (err) {
+      toast.error('Bulk tagging failed: ' + (err.message || 'Error'));
+    }
+  };
+
+  const handleBulkExport = (exportType) => {
+    if (selectedIds.length === 0) return;
+    const selectedVideos = rawVideos.filter(v => selectedIds.includes(v.id));
+    if (selectedVideos.length === 0) return;
+
+    if (exportType === 'json') {
+      const dataStr = JSON.stringify(selectedVideos, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `reelsmob_videos_${Date.now()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${selectedVideos.length} videos as JSON`);
+    } else {
+      const headers = ['id', 'title', 'status', 'created_at', 'schedule_time', 'tags', 'youtube_url'];
+      const rows = selectedVideos.map(v => [
+        `"${(v.id || '').replace(/"/g, '""')}"`,
+        `"${(v.title || '').replace(/"/g, '""')}"`,
+        `"${(v.status || '').replace(/"/g, '""')}"`,
+        `"${(v.created_at || '').replace(/"/g, '""')}"`,
+        `"${(v.schedule_time || v.scheduled_time || '').replace(/"/g, '""')}"`,
+        `"${(Array.isArray(v.tags) ? v.tags.join(';') : '').replace(/"/g, '""')}"`,
+        `"${(v.youtube_url || '').replace(/"/g, '""')}"`
+      ].join(','));
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `reelsmob_videos_${Date.now()}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${selectedVideos.length} videos as CSV`);
+    }
+  };
+
   const publishMutation = useMutation({
     mutationFn: (id) => dashboardApi.publishVideo(id),
     onSuccess: () => {
@@ -123,9 +380,55 @@ export default function LibraryPage() {
     onError: (err) => toast.error(err.message || 'Failed to convert video')
   });
 
-  const videos = videosData?.videos || [];
+  const [selectedTagFilter, setSelectedTagFilter] = useState(null);
+
+  const tagMutation = useMutation({
+    mutationFn: ({ id, tags }) => dashboardApi.updateVideoTags(id, tags),
+    onSuccess: (data, variables) => {
+      queryClient.setQueryData(['dashboardVideos', page, limit, activeStatus, debouncedSearch], (old) => {
+        if (!old?.videos) return old;
+        return {
+          ...old,
+          videos: old.videos.map(v => v.id === variables.id ? { ...v, tags: variables.tags } : v)
+        };
+      });
+      queryClient.invalidateQueries({ queryKey: ['dashboardVideos'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboardAnalyticsTags'] });
+      toast.success('Tags updated');
+    },
+    onError: (err) => toast.error(err.message || 'Failed to update tags')
+  });
+
+  const handleUpdateTags = async (id, tags) => {
+    return tagMutation.mutateAsync({ id, tags });
+  };
+
+  const rawVideos = videosData?.videos || [];
   const totalPages = videosData?.total_pages || 1;
   const totalCount = videosData?.total || 0;
+
+  const availableTags = useMemo(() => {
+    const set = new Set();
+    rawVideos.forEach(v => {
+      if (Array.isArray(v.tags)) {
+        v.tags.forEach(t => set.add(t));
+      }
+    });
+    return Array.from(set).sort();
+  }, [rawVideos]);
+
+  const videos = useMemo(() => {
+    if (!selectedTagFilter) return rawVideos;
+    return rawVideos.filter(v => Array.isArray(v.tags) && v.tags.includes(selectedTagFilter));
+  }, [rawVideos, selectedTagFilter]);
+
+  const tableContainerRef = useRef(null);
+  const rowVirtualizer = useVirtualizer({
+    count: videos.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => 72,
+    overscan: 5,
+  });
 
   const statusTabs = [
     { key: 'all', label: 'All Videos' },
@@ -304,6 +607,38 @@ export default function LibraryPage() {
             </Button>
             <Button
               type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsBulkTagging(true)}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+            >
+              <Tag className="w-3.5 h-3.5" />
+              Tag Selected
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleBulkExport('csv')}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+              title="Export selected videos as CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleBulkExport('json')}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+              title="Export selected videos as JSON"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              JSON
+            </Button>
+            <Button
+              type="button"
               size="sm"
               onClick={() => setIsBulkDeleting(true)}
               className="text-xs h-7 bg-danger text-white hover:bg-danger/90 cursor-pointer flex items-center gap-1"
@@ -314,6 +649,39 @@ export default function LibraryPage() {
           </motion.div>
         )}
       </div>
+
+      {/* Tag Filter Chips */}
+      {availableTags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5 p-2 bg-surface/60 rounded-lg border border-border/80">
+          <span className="text-[11px] font-mono text-text-muted flex items-center gap-1 mr-1">
+            <Tag className="w-3 h-3 text-accent" /> Filter by Tag:
+          </span>
+          {availableTags.map((t) => (
+            <button
+              key={t}
+              type="button"
+              onClick={() => setSelectedTagFilter(prev => prev === t ? null : t)}
+              className={cn(
+                "text-[10px] font-mono px-2 py-0.5 rounded-full border transition-all cursor-pointer",
+                selectedTagFilter === t
+                  ? "bg-accent text-accent-foreground border-accent font-semibold"
+                  : "bg-surface-elevated text-text-muted border-border hover:border-accent/40"
+              )}
+            >
+              #{t}
+            </button>
+          ))}
+          {selectedTagFilter && (
+            <button
+              type="button"
+              onClick={() => setSelectedTagFilter(null)}
+              className="text-[10px] font-mono text-text-muted hover:text-text cursor-pointer underline ml-1"
+            >
+              Clear filter
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Main Content: Loading, Empty, Grid or Table */}
       {isLoading ? (
@@ -369,8 +737,10 @@ export default function LibraryPage() {
                   <div className="relative aspect-video bg-black overflow-hidden flex items-center justify-center">
                     {v.thumbnail_url ? (
                       <img 
-                        src={v.thumbnail_url} 
+                        src={getOptimizedThumbnail(v.thumbnail_url, 'small')} 
                         alt={v.title} 
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
@@ -431,6 +801,12 @@ export default function LibraryPage() {
                         {format(new Date(v.schedule_time || v.scheduled_time), 'MMM d, h:mm a')}
                       </p>
                     )}
+
+                    <InlineTagEditor
+                      videoId={v.id}
+                      tags={v.tags || []}
+                      onUpdateTags={handleUpdateTags}
+                    />
                   </div>
                 </div>
 
@@ -506,11 +882,11 @@ export default function LibraryPage() {
           })}
         </div>
       ) : (
-        /* TABLE VIEW */
+        /* TABLE VIEW WITH VIRTUALIZATION */
         <div className="bg-surface border border-border rounded-xl overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
+          <div ref={tableContainerRef} className="overflow-x-auto max-h-[640px] overflow-y-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-surface-elevated/70 border-b border-border text-text-muted font-mono uppercase text-[10px]">
+              <thead className="bg-surface-elevated/95 backdrop-blur-xs sticky top-0 z-10 border-b border-border text-text-muted font-mono uppercase text-[10px]">
                 <tr>
                   <th className="p-3 pl-4 w-10">
                     <button
@@ -533,12 +909,21 @@ export default function LibraryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60 font-sans">
-                {videos.map((v) => {
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr style={{ height: `${rowVirtualizer.getVirtualItems()[0].start}px` }}>
+                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const v = videos[virtualRow.index];
+                  if (!v) return null;
                   const isSelected = selectedIds.includes(v.id);
 
                   return (
                     <tr 
                       key={v.id} 
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
                       className={cn(
                         "hover:bg-surface-elevated/40 transition-colors group",
                         isSelected && "bg-accent/5"
@@ -564,7 +949,13 @@ export default function LibraryPage() {
                           className="w-14 h-10 bg-black rounded border border-border/80 overflow-hidden relative cursor-pointer group/thumb"
                         >
                           {v.thumbnail_url ? (
-                            <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                            <img 
+                              src={getOptimizedThumbnail(v.thumbnail_url, 'small')} 
+                              alt="" 
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover" 
+                            />
                           ) : (
                             <Film className="w-4 h-4 m-auto text-text-muted opacity-50" />
                           )}
@@ -592,6 +983,11 @@ export default function LibraryPage() {
                             <ExternalLink className="w-3 h-3" />
                           </a>
                         )}
+                        <InlineTagEditor
+                          videoId={v.id}
+                          tags={v.tags || []}
+                          onUpdateTags={handleUpdateTags}
+                        />
                       </td>
 
                       <td className="p-3 whitespace-nowrap">
@@ -670,6 +1066,18 @@ export default function LibraryPage() {
                     </tr>
                   );
                 })}
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr
+                    style={{
+                      height: `${
+                        rowVirtualizer.getTotalSize() -
+                        rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1].end
+                      }px`,
+                    }}
+                  >
+                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
@@ -760,6 +1168,14 @@ export default function LibraryPage() {
         isLoading={deleteMutation.isPending}
         onClose={() => setDeletingVideo(null)}
         onConfirm={() => deletingVideo && deleteMutation.mutate(deletingVideo.id)}
+      />
+
+      {/* Bulk Tag Dialog */}
+      <BulkTagModal
+        isOpen={isBulkTagging}
+        count={selectedIds.length}
+        onClose={() => setIsBulkTagging(false)}
+        onApply={handleBulkTag}
       />
 
       {/* Bulk Delete Confirmation Dialog */}

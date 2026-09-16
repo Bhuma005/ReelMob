@@ -275,8 +275,10 @@ export function VideoEditorModal({
 
               {/* Play / Pause Center Overlay */}
               <button
+                type="button"
                 onClick={togglePlay}
-                className="absolute inset-0 m-auto w-12 h-12 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 transition-opacity backdrop-blur-xs hover:scale-110"
+                aria-label={isPlaying ? 'Pause video' : 'Play video'}
+                className="absolute inset-0 m-auto w-12 h-12 rounded-full bg-black/60 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity backdrop-blur-xs hover:scale-110 focus-visible:ring-2 focus-visible:ring-accent focus:outline-none cursor-pointer"
               >
                 {isPlaying ? <Pause className="w-5 h-5" /> : <Play className="w-5 h-5 ml-0.5" />}
               </button>
@@ -297,12 +299,17 @@ export function VideoEditorModal({
                 max={duration || 100}
                 step={0.1}
                 value={currentTime}
+                aria-label="Video timeline scrubber"
+                aria-valuemin={0}
+                aria-valuemax={duration || 100}
+                aria-valuenow={currentTime}
+                aria-valuetext={`${currentTime.toFixed(1)}s of ${(duration || 0).toFixed(1)}s`}
                 onChange={(e) => {
                   const val = parseFloat(e.target.value);
                   setCurrentTime(val);
                   if (videoRef.current) videoRef.current.currentTime = val;
                 }}
-                className="w-full accent-accent h-1.5 bg-surface-3 rounded-lg cursor-pointer"
+                className="w-full accent-accent h-1.5 bg-surface-3 rounded-lg cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus:outline-none"
               />
 
               {/* In/Out Quick Action Buttons */}
@@ -323,34 +330,46 @@ export function VideoEditorModal({
           {/* Right Column: Editing Tools Tabs */}
           <div className="lg:col-span-5 flex flex-col gap-4">
             {/* Tool Category Tabs */}
-            <div className="flex items-center gap-1 p-1 bg-surface-1 rounded-xl border border-border overflow-x-auto text-xs">
+            <div role="tablist" aria-label="Editor categories" className="flex items-center gap-1 p-1 bg-surface-1 rounded-xl border border-border overflow-x-auto text-xs">
               <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'trim'}
                 onClick={() => setActiveTab('trim')}
-                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 ${
+                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 focus-visible:ring-2 focus-visible:ring-accent focus:outline-none cursor-pointer ${
                   activeTab === 'trim' ? 'bg-surface-2 text-text shadow-xs' : 'text-text-muted hover:text-text'
                 }`}
               >
                 <Scissors className="w-3.5 h-3.5" /> Trim
               </button>
               <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'color'}
                 onClick={() => setActiveTab('color')}
-                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 ${
+                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 focus-visible:ring-2 focus-visible:ring-accent focus:outline-none cursor-pointer ${
                   activeTab === 'color' ? 'bg-surface-2 text-text shadow-xs' : 'text-text-muted hover:text-text'
                 }`}
               >
                 <Sliders className="w-3.5 h-3.5" /> Color
               </button>
               <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'captions'}
                 onClick={() => setActiveTab('captions')}
-                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 ${
+                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 focus-visible:ring-2 focus-visible:ring-accent focus:outline-none cursor-pointer ${
                   activeTab === 'captions' ? 'bg-surface-2 text-text shadow-xs' : 'text-text-muted hover:text-text'
                 }`}
               >
                 <Type className="w-3.5 h-3.5" /> Captions
               </button>
               <button
+                type="button"
+                role="tab"
+                aria-selected={activeTab === 'watermark'}
                 onClick={() => setActiveTab('watermark')}
-                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 ${
+                className={`flex-1 py-1.5 px-2 rounded-lg font-medium transition-colors flex items-center justify-center gap-1 focus-visible:ring-2 focus-visible:ring-accent focus:outline-none cursor-pointer ${
                   activeTab === 'watermark' ? 'bg-surface-2 text-text shadow-xs' : 'text-text-muted hover:text-text'
                 }`}
               >

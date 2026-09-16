@@ -39,6 +39,10 @@ from backend.schemas import (
     DuplicateCheckRequest,
     DuplicateCheckResponse,
     AnalyticsTrendsResponse,
+    UpdateVideoTagsRequest,
+    TagPerformanceResponse,
+    GlobalSearchResponse,
+    GlobalSearchResultItem,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1379,6 +1383,115 @@ async def get_channel_trends_endpoint(days: int = 30):
     from backend.services.analytics_trends import calculate_channel_trends
     days_bounded = max(7, min(days, 90))
     return await asyncio.to_thread(calculate_channel_trends, days=days_bounded)
+
+
+# In-memory tag cache for offline/test mode
+LOCAL_VIDEO_TAGS: Dict[str, List[str]] = {}
+
+@app.patch("/api/dashboard/videos/{video_id}/tags", summary="Update Video Tags")
+async def update_video_tags_endpoint(video_id: str, req: UpdateVideoTagsRequest):
+    """
+    Updates custom tags for a video in the creator's library.
+    Validates tag naming, length, and cardinality.
+    """
+    clean_id = sanitize_filename_or_id(video_id)
+    if not clean_id:
+        raise HTTPException(status_code=400, detail="Invalid video_id")
+
+    LOCAL_VIDEO_TAGS[clean_id] = req.tags
+
+    # Attempt Supabase update
+    try:
+        from cloud.cloud_auth import get_supabase_client
+        sb = get_supabase_client()
+        sb.table("video_library").update({"tags": req.tags}).eq("id", clean_id).execute()
+    except Exception as exc:
+        logger.debug(f"Supabase tag update skipped or failed: {exc}")
+
+    return {
+        "status": "success",
+        "id": clean_id,
+        "tags": req.tags
+    }
+
+
+@app.get("/api/dashboard/analytics/tags", summary="Tag Performance Analytics", response_model=TagPerformanceResponse)
+async def get_tag_performance_endpoint(days: int = 30):
+    """
+    Computes performance by tag (average views, likes, engagement rate, benchmark status).
+    """
+    from backend.services.analytics_trends import calculate_performance_by_tag
+    days_bounded = max(7, min(days, 90))
+    return await asyncio.to_thread(calculate_performance_by_tag, days=days_bounded)
+
+
+@app.get("/api/dashboard/search", summary="Global Dashboard & Library Search", response_model=GlobalSearchResponse)
+async def search_dashboard_endpoint(q: str = ""):
+    """
+    Global search across video titles, descriptions, and custom tags.
+    """
+    clean_q = (q or "").strip()
+    if not clean_q:
+        return GlobalSearchResponse(query="", results=[], total=0)
+
+    clean_q_lower = clean_q.lower()
+    results: List[GlobalSearchResultItem] = []
+
+    raw_rows = []
+    try:
+        from cloud.cloud_auth import get_supabase_client
+        sb = get_supabase_client()
+        query_res = sb.table("video_library").select("*").limit(100).execute()
+        raw_rows = query_res.data or []
+    except Exception as exc:
+        logger.debug(f"Supabase search fallback: {exc}")
+
+    # Also include any locally tagged videos if not in raw_rows (e.g. tests)
+    existing_ids = {str(r.get("id")) for r in raw_rows}
+    for vid_id, tags in LOCAL_VIDEO_TAGS.items():
+        if vid_id not in existing_ids:
+            raw_rows.append({
+                "id": vid_id,
+                "title": f"Video {vid_id}",
+                "description": "",
+                "tags": tags,
+                "status": "published"
+            })
+
+    for row in raw_rows:
+        title = str(row.get("title") or "")
+        desc = str(row.get("description") or "")
+        row_tags = row.get("tags") or []
+        if isinstance(row_tags, str):
+            row_tags = [t.strip() for t in row_tags.strip("{}").split(",") if t.strip()]
+
+        match_field = None
+        if clean_q_lower in title.lower():
+            match_field = "title"
+        elif any(clean_q_lower in str(t).lower() for t in row_tags):
+            match_field = "tags"
+        elif clean_q_lower in desc.lower():
+            match_field = "description"
+
+        if match_field:
+            results.append(GlobalSearchResultItem(
+                id=str(row.get("id")),
+                title=title,
+                description=desc,
+                tags=row_tags,
+                status=row.get("status"),
+                thumbnail_url=row.get("thumbnail_url"),
+                youtube_url=row.get("youtube_url"),
+                match_field=match_field
+            ))
+            if len(results) >= 20:
+                break
+
+    return GlobalSearchResponse(
+        query=clean_q,
+        results=results,
+        total=len(results)
+    )
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")

@@ -22,6 +22,27 @@
     
     --radius: 0.5rem;
   }
+
+  [data-theme="light"] {
+    --background: var(--bg-canvas);
+    --surface: var(--bg-surface);
+    --surface-elevated: var(--bg-surface-elevated);
+    --surface-hover: var(--bg-surface-hover);
+    
+    --primary: #0f172a;
+    --primary-foreground: #ffffff;
+    
+    --secondary: #e2e8f0;
+    --secondary-foreground: #0f172a;
+    
+    --muted: #f1f5f9;
+    --muted-foreground: #64748b;
+  }
+}
+
+:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 2px;
 }
 
 @layer base {
