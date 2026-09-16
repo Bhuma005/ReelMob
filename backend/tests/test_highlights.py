@@ -79,9 +79,15 @@ def test_detect_highlights_fallback(sample_video_path):
         assert 0.0 <= c["confidence"] <= 1.0
 
 
-def test_highlights_api_job_lifecycle(sample_video_path):
-    client = TestClient(app)
+@pytest.fixture
+def client():
+    from backend.main import RATE_LIMIT_STORE
+    RATE_LIMIT_STORE.clear()
+    with TestClient(app) as c:
+        yield c
 
+
+def test_highlights_api_job_lifecycle(client, sample_video_path):
     # 1. Create job
     res = client.post("/api/video/highlights", json={
         "video_path": os.path.basename(sample_video_path),
@@ -114,7 +120,6 @@ def test_highlights_api_job_lifecycle(sample_video_path):
     assert completed, "Highlight job did not complete in time"
 
 
-def test_highlights_api_404():
-    client = TestClient(app)
+def test_highlights_api_404(client):
     res = client.get("/api/video/highlights/status/nonexistent-uuid-9999")
     assert res.status_code == 404

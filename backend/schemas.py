@@ -185,3 +185,30 @@ class HighlightResponse(BaseModel):
     status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
     highlights: Optional[List[HighlightItem]] = None
     error: Optional[str] = None
+
+
+class DuplicateMatch(BaseModel):
+    id: str
+    title: str
+    distance: int = Field(..., ge=0, le=64)
+    similarity_pct: float = Field(..., ge=0.0, le=100.0)
+    created_at: Optional[str] = None
+
+
+class DuplicateCheckRequest(BaseModel):
+    video_path: str = Field(..., max_length=1000, description="Local video filename or path inside downloads/")
+    threshold: int = Field(default=10, ge=0, le=64, description="Maximum hamming distance threshold")
+
+    @field_validator('video_path')
+    @classmethod
+    def check_video_path(cls, v: str) -> str:
+        if not v or '..' in v or '\0' in v:
+            raise ValueError("Invalid or unsafe video_path")
+        return v
+
+
+class DuplicateCheckResponse(BaseModel):
+    is_duplicate: bool
+    hash: str
+    matches: List[DuplicateMatch] = []
+

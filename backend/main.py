@@ -36,6 +36,8 @@ from backend.schemas import (
     HighlightRequest,
     HighlightResponse,
     HighlightItem,
+    DuplicateCheckRequest,
+    DuplicateCheckResponse,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1323,6 +1325,48 @@ async def get_highlight_job_status(job_id: str):
         "highlights": job.get("highlights"),
         "error": job.get("error")
     }
+
+
+@app.post("/api/video/check-duplicate", summary="Check for Duplicate / Near-Duplicate Videos", response_model=DuplicateCheckResponse)
+async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
+    """
+    Computes perceptual difference hash (dHash) for the target video
+    and compares against the creator's video library using Hamming distance.
+    Flags duplicates if distance <= threshold (default 10 / 64 bits).
+    """
+    from backend.services.duplicate_detector import check_video_duplicate
+
+    clean_path = sanitize_filename_or_id(req.video_path)
+    candidate_paths = [
+        os.path.join("downloads", clean_path),
+        clean_path,
+        os.path.join("downloads", os.path.basename(clean_path)),
+    ]
+    input_file = None
+    for p in candidate_paths:
+        if os.path.exists(p) and os.path.isfile(p):
+            input_file = p
+            break
+
+    if not input_file:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Video file not found for path: {clean_path}"
+        )
+
+    try:
+        result = await asyncio.to_thread(
+            check_video_duplicate,
+            video_path=input_file,
+            threshold=req.threshold
+        )
+        return result
+    except Exception as exc:
+        logger.error(f"Duplicate check failed: {exc}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail=f"Duplicate check failed: {str(exc)}"
+        )
 
 
 @app.post("/api/dashboard/videos/{video_id}/publish", summary="Force Publish to YouTube immediately")

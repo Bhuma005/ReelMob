@@ -136,6 +136,26 @@ export default function CreateReelPage() {
     setIsEditorOpen(true);
   };
 
+  // Duplicate Video Detection state
+  const [duplicateMatch, setDuplicateMatch] = useState(null);
+  const [isDismissedDuplicate, setIsDismissedDuplicate] = useState(false);
+
+  const checkDuplicateVideo = async (videoPathOverride) => {
+    const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
+    if (!pathToUse) return;
+    try {
+      const res = await videosApi.checkDuplicate(pathToUse);
+      if (res?.is_duplicate && res.matches?.length > 0) {
+        setDuplicateMatch(res.matches[0]);
+        setIsDismissedDuplicate(false);
+      } else {
+        setDuplicateMatch(null);
+      }
+    } catch (e) {
+      console.debug("Duplicate check skipped or errored:", e);
+    }
+  };
+
 
   useEffect(() => {
     return () => stopPolling();
@@ -464,6 +484,62 @@ export default function CreateReelPage() {
           transition={{ duration: 0.3 }}
           className="grid gap-6"
         >
+          {/* Non-blocking Duplicate Warning Card */}
+          {duplicateMatch && !isDismissedDuplicate && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-4 rounded-xl border border-warning/40 bg-warning/10 text-text space-y-2 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-warning/20 text-warning shrink-0 mt-0.5">
+                    <AlertTriangle className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <h4 className="text-sm font-bold text-text">
+                        Potential Duplicate Video Detected
+                      </h4>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-warning/20 text-warning border border-warning/30">
+                        {duplicateMatch.similarity_pct}% Visual Similarity
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-muted mt-1 leading-relaxed">
+                      This video has high visual similarity with an existing video in your library:{' '}
+                      <span className="font-semibold text-text">"{duplicateMatch.title}"</span>.
+                      Publishing near-identical videos can suppress reach and engagement.
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsDismissedDuplicate(true)}
+                  className="text-text-muted hover:text-text text-xs px-2 py-1 rounded cursor-pointer transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2 pl-11">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditorTrim(null);
+                    setEditorVideoPath(store.metadata?.video_path || 'source_video.mp4');
+                    setIsEditorOpen(true);
+                  }}
+                  className="text-xs h-7 border-warning/30 text-warning hover:bg-warning/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Scissors className="w-3.5 h-3.5" />
+                  Differentiate in Video Studio
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
           {/* Top Section: Media Preview & AI Assistant Side-by-Side */}
           <div className="grid md:grid-cols-[300px_1fr] gap-6 items-start">
             {/* Left Card: Thumbnail & Quick Actions */}
