@@ -43,6 +43,9 @@ from backend.schemas import (
     TagPerformanceResponse,
     GlobalSearchResponse,
     GlobalSearchResultItem,
+    ModerationCheckRequest,
+    ModerationJobResponse,
+    ModerationResult,
     validate_video_url,
     sanitize_filename_or_id,
 )
@@ -1372,6 +1375,84 @@ async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
             status_code=500,
             detail=f"Duplicate check failed: {str(exc)}"
         )
+
+
+MODERATION_JOBS: Dict[str, Dict[str, Any]] = {}
+
+def execute_moderation_job(
+    job_id: str,
+    video_path: Optional[str],
+    url: Optional[str]
+):
+    from backend.services.content_moderation import check_content_moderation
+
+    job = MODERATION_JOBS.get(job_id)
+    if not job:
+        return
+
+    job["status"] = "PROCESSING"
+    try:
+        path_to_use = video_path
+        if not path_to_use:
+            downloads_dir = "downloads"
+            if os.path.exists(downloads_dir):
+                files = [
+                    os.path.join(downloads_dir, f)
+                    for f in os.listdir(downloads_dir)
+                    if f.lower().endswith(('.mp4', '.mkv', '.webm', '.mov'))
+                ]
+                if files:
+                    files.sort(key=os.path.getmtime, reverse=True)
+                    path_to_use = files[0]
+
+        if not path_to_use:
+            raise ValueError("No video file specified or found in downloads.")
+
+        result = check_content_moderation(video_path=path_to_use, url=url)
+        job["status"] = "COMPLETED"
+        job["result"] = result
+    except Exception as exc:
+        logger.error(f"Moderation job {job_id} failed: {exc}", exc_info=True)
+        job["status"] = "FAILED"
+        job["error"] = str(exc)
+
+
+@app.post("/api/video/moderation-check", summary="Content Moderation & Watermark Detection (Async Job)")
+async def create_moderation_job(req: ModerationCheckRequest, background_tasks: BackgroundTasks):
+    """
+    Submits a video for asynchronous content moderation and watermark detection.
+    Inspects keyframes for visible platform watermarks, logos, and overlay branding.
+    Strictly advisory: does not block publishing.
+    """
+    job_id = str(uuid.uuid4())
+    MODERATION_JOBS[job_id] = {
+        "job_id": job_id,
+        "status": "PENDING",
+        "result": None,
+        "error": None,
+        "created_at": datetime.now().isoformat()
+    }
+    background_tasks.add_task(
+        execute_moderation_job,
+        job_id=job_id,
+        video_path=req.video_path,
+        url=req.url
+    )
+    return {"job_id": job_id, "status": "PENDING"}
+
+
+@app.get("/api/video/moderation-check/status/{job_id}", summary="Get Moderation Check Status", response_model=ModerationJobResponse)
+async def get_moderation_job_status(job_id: str):
+    clean_id = sanitize_filename_or_id(job_id)
+    job = MODERATION_JOBS.get(clean_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Moderation job not found")
+    return {
+        "job_id": job["job_id"],
+        "status": job["status"],
+        "result": job.get("result"),
+        "error": job.get("error")
+    }
 
 
 @app.get("/api/dashboard/analytics/trends", summary="Channel Historical Trend Comparison & Rolling Averages", response_model=AnalyticsTrendsResponse)

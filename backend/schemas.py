@@ -294,4 +294,35 @@ class GlobalSearchResponse(BaseModel):
     total: int
 
 
+class ModerationCheckRequest(BaseModel):
+    video_path: Optional[str] = Field(default=None, max_length=1000, description="Local video filename or path inside downloads/")
+    url: Optional[str] = None
 
+    @field_validator('video_path')
+    @classmethod
+    def check_video_path(cls, v: Optional[str]) -> Optional[str]:
+        if v and ('..' in v or '\0' in v):
+            raise ValueError("Path traversal characters not allowed in video_path")
+        return v
+
+    @field_validator('url')
+    @classmethod
+    def check_url(cls, v: Optional[str]) -> Optional[str]:
+        if v and v.strip():
+            return validate_video_url(v)
+        return v
+
+
+class ModerationResult(BaseModel):
+    watermark_detected: bool
+    confidence: float = Field(..., ge=0.0, le=1.0)
+    severity: Literal["none", "low", "medium", "high"] = "none"
+    flagged_labels: List[str] = []
+    notes: str
+
+
+class ModerationJobResponse(BaseModel):
+    job_id: str
+    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
+    result: Optional[ModerationResult] = None
+    error: Optional[str] = None
