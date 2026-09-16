@@ -8,11 +8,11 @@ import re
 import urllib.request
 import tempfile
 import shutil
-from typing import Optional, List, Dict, Any
+from typing import Optional, List, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 import yt_dlp
 
 from backend.logging_config import setup_logging, request_id_ctx_var
@@ -1504,6 +1504,35 @@ async def get_tag_performance_endpoint(days: int = 30):
     from backend.services.analytics_trends import calculate_performance_by_tag
     days_bounded = max(7, min(days, 90))
     return await asyncio.to_thread(calculate_performance_by_tag, days=days_bounded)
+
+
+@app.get("/api/dashboard/analytics/export", summary="Export Analytics Report (CSV or PDF)")
+async def export_analytics_endpoint(
+    format: Literal["csv", "pdf"] = "csv",
+    days: int = 30
+):
+    """
+    Exports channel performance report in CSV or PDF format.
+    Includes rolling baseline averages, video breakdown, and tag metrics.
+    Strictly validated with Literal['csv', 'pdf'].
+    """
+    from backend.services.analytics_export import generate_analytics_csv, generate_analytics_pdf
+    days_bounded = max(7, min(days, 90))
+
+    if format == "csv":
+        csv_content = await asyncio.to_thread(generate_analytics_csv, days=days_bounded)
+        return Response(
+            content=csv_content,
+            media_type="text/csv",
+            headers={"Content-Disposition": f'attachment; filename="reelsmob_analytics_{days_bounded}d.csv"'}
+        )
+    elif format == "pdf":
+        pdf_bytes = await asyncio.to_thread(generate_analytics_pdf, days=days_bounded)
+        return Response(
+            content=pdf_bytes,
+            media_type="application/pdf",
+            headers={"Content-Disposition": f'attachment; filename="reelsmob_analytics_{days_bounded}d.pdf"'}
+        )
 
 
 @app.get("/api/dashboard/search", summary="Global Dashboard & Library Search", response_model=GlobalSearchResponse)

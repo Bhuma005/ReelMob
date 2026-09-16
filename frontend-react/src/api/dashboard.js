@@ -1,6 +1,11 @@
-import { fetchApi } from './client';
+import { API_BASE, fetchApi } from './client';
 
 export const dashboardApi = {
+  exportAnalytics: async (format = 'csv', days = 30) => {
+    const res = await fetch(`${API_BASE}/api/dashboard/analytics/export?format=${format}&days=${days}`);
+    if (!res.ok) throw new Error(`Analytics export failed: ${res.statusText}`);
+    return res;
+  },
   getStats: () => fetchApi('/api/dashboard/stats'),
   getVideos: (params = {}) => {
     const query = new URLSearchParams();
