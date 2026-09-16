@@ -14,7 +14,7 @@ import { toast } from 'sonner';
 import { 
   Loader2, Download, Wand2, MonitorPlay, Check, Sparkles, 
   CheckCircle2, RotateCcw, XCircle, RefreshCw,
-  Film, Copy, ShieldCheck, Scissors, AlertTriangle
+  Film, Copy, ShieldCheck, Scissors, AlertTriangle, ShieldAlert, Crop
 } from 'lucide-react';
 import { cn } from '../lib/utils';
 import { VideoEditorModal } from '../components/video/VideoEditorModal';
@@ -45,6 +45,7 @@ export default function CreateReelPage() {
   // Video Editor modal state
   const [isEditorOpen, setIsEditorOpen] = useState(false);
   const [editorTrim, setEditorTrim] = useState(null);
+  const [editorInitialTab, setEditorInitialTab] = useState('trim');
   const [editorVideoPath, setEditorVideoPath] = useState('');
 
   // AI Multi-Clip Highlight Detection state
@@ -54,6 +55,7 @@ export default function CreateReelPage() {
 
   const pollTimerRef = useRef(null);
   const stopwatchRef = useRef(null);
+  const moderationPollRef = useRef(null);
 
   const {
     register,
@@ -82,6 +84,10 @@ export default function CreateReelPage() {
     if (highlightPollRef.current) {
       clearInterval(highlightPollRef.current);
       highlightPollRef.current = null;
+    }
+    if (moderationPollRef.current) {
+      clearInterval(moderationPollRef.current);
+      moderationPollRef.current = null;
     }
   };
 
@@ -132,6 +138,7 @@ export default function CreateReelPage() {
 
   const handleOpenEditorForClip = (clip) => {
     setEditorTrim({ start: clip.start, end: clip.end });
+    setEditorInitialTab('trim');
     setEditorVideoPath(store.metadata?.video_path || 'source_video.mp4');
     setIsEditorOpen(true);
   };
@@ -156,6 +163,62 @@ export default function CreateReelPage() {
     }
   };
 
+  // Content Moderation / Watermark Detection state
+  const [moderationResult, setModerationResult] = useState(null);
+  const [isDismissedModeration, setIsDismissedModeration] = useState(false);
+  const [isModerating, setIsModerating] = useState(false);
+
+  const checkModeration = async (videoPathOverride) => {
+    const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
+    if (!pathToUse) return;
+    if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+    setIsModerating(true);
+    try {
+      const initRes = await videosApi.checkModeration(pathToUse, store.url);
+      if (!initRes || !initRes.job_id) {
+        setIsModerating(false);
+        return;
+      }
+      const jobId = initRes.job_id;
+      let polls = 0;
+      moderationPollRef.current = setInterval(async () => {
+        polls++;
+        if (polls > 40) {
+          if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+          setIsModerating(false);
+          return;
+        }
+        try {
+          const statusRes = await videosApi.getModerationStatus(jobId);
+          if (statusRes?.status === 'COMPLETED') {
+            if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+            setIsModerating(false);
+            if (statusRes.result?.watermark_detected) {
+              setModerationResult(statusRes.result);
+              setIsDismissedModeration(false);
+            } else {
+              setModerationResult(null);
+            }
+          } else if (statusRes?.status === 'FAILED') {
+            if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+            setIsModerating(false);
+          }
+        } catch (pollErr) {
+          console.debug("Moderation poll error:", pollErr);
+        }
+      }, 1500);
+    } catch (e) {
+      console.debug("Moderation check skipped or errored:", e);
+      setIsModerating(false);
+    }
+  };
+
+  useEffect(() => {
+    if (store.metadata?.video_path) {
+      checkDuplicateVideo(store.metadata.video_path);
+      checkModeration(store.metadata.video_path);
+    }
+  }, [store.metadata?.video_path]);
 
   useEffect(() => {
     return () => stopPolling();
@@ -535,6 +598,61 @@ export default function CreateReelPage() {
                 >
                   <Scissors className="w-3.5 h-3.5" />
                   Differentiate in Video Studio
+                </Button>
+              </div>
+            </motion.div>
+          )}
+
+          {/* Non-blocking Content Moderation / Watermark Advisory Card */}
+          {moderationResult && moderationResult.watermark_detected && !isDismissedModeration && (
+            <motion.div
+              initial={{ opacity: 0, y: -8 }}
+              animate={{ opacity: 1, y: 0 }}
+              className="p-4 rounded-xl border border-amber-500/40 bg-amber-500/10 text-text space-y-2 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-3">
+                <div className="flex items-start gap-3">
+                  <div className="p-2 rounded-lg bg-amber-500/20 text-amber-400 shrink-0 mt-0.5">
+                    <ShieldAlert className="w-5 h-5" />
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <h4 className="text-sm font-bold text-text">
+                        Watermark or Overlay Branding Detected
+                      </h4>
+                      <span className="text-[10px] font-mono font-bold uppercase tracking-wider px-2 py-0.5 rounded bg-amber-500/20 text-amber-400 border border-amber-500/30">
+                        {Math.round(moderationResult.confidence * 100)}% Confidence ({moderationResult.severity} severity)
+                      </span>
+                    </div>
+                    <p className="text-xs text-text-muted mt-1 leading-relaxed">
+                      {moderationResult.notes || "This video appears to have a visible platform watermark or logo — you may want to crop or blur it before publishing."}
+                    </p>
+                  </div>
+                </div>
+
+                <button
+                  type="button"
+                  onClick={() => setIsDismissedModeration(true)}
+                  className="text-text-muted hover:text-text text-xs px-2 py-1 rounded cursor-pointer transition-colors"
+                >
+                  Dismiss
+                </button>
+              </div>
+
+              <div className="flex items-center gap-3 pt-2 pl-11">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  onClick={() => {
+                    setEditorTrim(null);
+                    setEditorInitialTab('framing');
+                    setEditorVideoPath(store.metadata?.video_path || 'source_video.mp4');
+                    setIsEditorOpen(true);
+                  }}
+                  className="text-xs h-7 border-amber-500/30 text-amber-400 hover:bg-amber-500/20 cursor-pointer flex items-center gap-1.5"
+                >
+                  <Crop className="w-3.5 h-3.5" />
+                  Crop / Blur in Video Studio
                 </Button>
               </div>
             </motion.div>
@@ -1168,6 +1286,7 @@ export default function CreateReelPage() {
         videoPath={editorVideoPath}
         videoUrl={store.url}
         initialTrim={editorTrim}
+        initialTab={editorInitialTab}
         onSaveSuccess={() => {
           toast.success("Edited video saved successfully!");
           setIsEditorOpen(false);

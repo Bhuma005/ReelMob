@@ -6,12 +6,15 @@ import {
   ResponsiveContainer, CartesianGrid, Cell 
 } from 'recharts';
 import { dashboardApi } from '../api/dashboard';
+import { videosApi } from '../api/videos';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '../components/ui/Card';
 import { Button } from '../components/ui/Button';
 import { SkeletonMetric } from '../components/ui/Skeleton';
+import { toast } from 'sonner';
 import { 
   Activity, CheckCircle2, Clock, AlertCircle, Sparkles, ExternalLink, ArrowUpRight,
-  TrendingUp, TrendingDown, Target, Zap, Tag
+  TrendingUp, TrendingDown, Target, Zap, Tag,
+  Download, FileSpreadsheet, FileText, ChevronDown, Loader2
 } from 'lucide-react';
 import { format, subDays } from 'date-fns';
 import { useNavigate } from 'react-router-dom';
@@ -50,6 +53,23 @@ const CustomChartTooltip = ({ active, payload, label }) => {
 export default function AnalyticsPage() {
   const navigate = useNavigate();
   const [timeRange, setTimeRange] = useState('30d');
+  const [isExportMenuOpen, setIsExportMenuOpen] = useState(false);
+  const [isExporting, setIsExporting] = useState(false);
+
+  const handleExport = async (exportFormat) => {
+    setIsExporting(true);
+    setIsExportMenuOpen(false);
+    const days = timeRange === '7d' ? 7 : 30;
+    try {
+      const res = await dashboardApi.exportAnalytics(exportFormat, days);
+      videosApi.handleFileDownload(res);
+      toast.success(`Exported ${exportFormat.toUpperCase()} report successfully!`);
+    } catch (err) {
+      toast.error(err.message || "Failed to export report");
+    } finally {
+      setIsExporting(false);
+    }
+  };
 
   const { data: stats, isLoading: statsLoading } = useQuery({
     queryKey: ['dashboardStats'],
@@ -130,25 +150,76 @@ export default function AnalyticsPage() {
           </p>
         </div>
 
-        <div className="flex items-center gap-1.5 p-1 bg-surface-elevated rounded-lg border border-border w-fit">
-          <button
-            type="button"
-            onClick={() => setTimeRange('7d')}
-            className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${
-              timeRange === '7d' ? 'bg-accent text-accent-foreground shadow-xs' : 'text-text-muted hover:text-text'
-            }`}
-          >
-            Last 7 Days
-          </button>
-          <button
-            type="button"
-            onClick={() => setTimeRange('30d')}
-            className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${
-              timeRange === '30d' ? 'bg-accent text-accent-foreground shadow-xs' : 'text-text-muted hover:text-text'
-            }`}
-          >
-            Last 30 Days
-          </button>
+        <div className="flex items-center gap-3 flex-wrap sm:flex-nowrap">
+          <div className="flex items-center gap-1.5 p-1 bg-surface-elevated rounded-lg border border-border w-fit">
+            <button
+              type="button"
+              onClick={() => setTimeRange('7d')}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                timeRange === '7d' ? 'bg-accent text-accent-foreground shadow-xs' : 'text-text-muted hover:text-text'
+              }`}
+            >
+              Last 7 Days
+            </button>
+            <button
+              type="button"
+              onClick={() => setTimeRange('30d')}
+              className={`px-3 py-1 text-xs font-semibold rounded-md transition-all cursor-pointer ${
+                timeRange === '30d' ? 'bg-accent text-accent-foreground shadow-xs' : 'text-text-muted hover:text-text'
+              }`}
+            >
+              Last 30 Days
+            </button>
+          </div>
+
+          {/* Export Report Dropdown */}
+          <div className="relative">
+            <Button
+              variant="outline"
+              size="sm"
+              disabled={isExporting}
+              onClick={() => setIsExportMenuOpen(prev => !prev)}
+              className="text-xs h-8.5 gap-1.5 cursor-pointer border-border hover:bg-surface-elevated"
+            >
+              {isExporting ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
+              ) : (
+                <Download className="w-3.5 h-3.5 text-accent" />
+              )}
+              Export Report
+              <ChevronDown className="w-3 h-3 text-text-muted opacity-70" />
+            </Button>
+
+            {isExportMenuOpen && (
+              <div 
+                className="absolute right-0 mt-1.5 w-44 rounded-xl border border-border bg-surface-elevated p-1.5 shadow-xl z-50 text-xs space-y-1"
+                onMouseLeave={() => setIsExportMenuOpen(false)}
+              >
+                <button
+                  type="button"
+                  onClick={() => handleExport('csv')}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left text-text hover:bg-surface hover:text-accent cursor-pointer transition-colors"
+                >
+                  <FileSpreadsheet className="w-4 h-4 text-emerald-400" />
+                  <div>
+                    <div className="font-semibold">CSV Spreadsheet</div>
+                    <div className="text-[10px] text-text-muted">Raw data & metrics</div>
+                  </div>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => handleExport('pdf')}
+                  className="w-full flex items-center gap-2.5 px-3 py-2 rounded-lg text-left text-text hover:bg-surface hover:text-accent cursor-pointer transition-colors"
+                >
+                  <FileText className="w-4 h-4 text-red-400" />
+                  <div>
+                    <div className="font-semibold">PDF Document</div>
+                    <div className="text-[10px] text-text-muted">Executive summary</div>
+                  </div>
+                </button>
+              </div>
+            )}
+          </div>
         </div>
       </div>
 

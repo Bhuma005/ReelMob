@@ -28,6 +28,11 @@ export const videosApi = {
     method: 'POST',
     body: JSON.stringify({ video_path: videoPath, threshold })
   }),
+  checkModeration: (videoPath, url = null) => fetchApi('/api/video/moderation-check', {
+    method: 'POST',
+    body: JSON.stringify({ video_path: videoPath, url })
+  }),
+  getModerationStatus: (jobId) => fetchApi(`/api/video/moderation-check/status/${jobId}`),
   // Handles the actual browser download action
   handleFileDownload: (response) => {
     const disposition = response.headers.get('content-disposition');

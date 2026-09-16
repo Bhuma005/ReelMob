@@ -14,6 +14,7 @@ export function VideoEditorModal({
   videoUrl,
   onSaveSuccess,
   initialTrim = null,
+  initialTab = 'trim',
 }) {
   const videoRef = useRef(null);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -21,7 +22,7 @@ export function VideoEditorModal({
   const [duration, setDuration] = useState(0);
 
   // Active Tab: 'trim' | 'color' | 'captions' | 'watermark' | 'framing'
-  const [activeTab, setActiveTab] = useState('trim');
+  const [activeTab, setActiveTab] = useState(initialTab || 'trim');
 
   // Edit Parameters
   const [trimStart, setTrimStart] = useState(0);
@@ -48,6 +49,7 @@ export function VideoEditorModal({
   useEffect(() => {
     if (isOpen) {
       setIsPlaying(false);
+      if (initialTab) setActiveTab(initialTab);
       const startSec = initialTrim?.start ?? 0;
       setCurrentTime(startSec);
       if (initialTrim?.start != null) {
@@ -57,7 +59,7 @@ export function VideoEditorModal({
         setTrimEnd(initialTrim.end);
       }
     }
-  }, [isOpen, initialTrim]);
+  }, [isOpen, initialTrim, initialTab]);
 
   if (!isOpen) return null;
 
