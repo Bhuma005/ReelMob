@@ -1,5 +1,6 @@
-import React, { useState, useEffect, useMemo } from 'react';
+import React, { useState, useEffect, useMemo, useRef } from 'react';
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+import { useVirtualizer } from '@tanstack/react-virtual';
 import { motion } from 'framer-motion';
 import { dashboardApi } from '../api/dashboard';
 import { Card } from '../components/ui/Card';
@@ -18,6 +19,20 @@ import {
 import { format, formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+
+export function getOptimizedThumbnail(url, size = 'small') {
+  if (!url) return '';
+  if (url.includes('ytimg.com') || url.includes('youtube.com')) {
+    if (size === 'small') {
+      return url.replace('maxresdefault.jpg', 'mqdefault.jpg');
+    }
+  }
+  if (size === 'small' && (url.includes('supabase.co') || url.includes('storage/v1'))) {
+    const separator = url.includes('?') ? '&' : '?';
+    return `${url}${separator}width=320&quality=80`;
+  }
+  return url;
+}
 
 function InlineTagEditor({ videoId, tags = [], onUpdateTags }) {
   const [isEditing, setIsEditing] = useState(false);
@@ -407,6 +422,14 @@ export default function LibraryPage() {
     return rawVideos.filter(v => Array.isArray(v.tags) && v.tags.includes(selectedTagFilter));
   }, [rawVideos, selectedTagFilter]);
 
+  const tableContainerRef = useRef(null);
+  const rowVirtualizer = useVirtualizer({
+    count: videos.length,
+    getScrollElement: () => tableContainerRef.current,
+    estimateSize: () => 72,
+    overscan: 5,
+  });
+
   const statusTabs = [
     { key: 'all', label: 'All Videos' },
     { key: 'scheduled', label: 'Scheduled' },
@@ -714,8 +737,10 @@ export default function LibraryPage() {
                   <div className="relative aspect-video bg-black overflow-hidden flex items-center justify-center">
                     {v.thumbnail_url ? (
                       <img 
-                        src={v.thumbnail_url} 
+                        src={getOptimizedThumbnail(v.thumbnail_url, 'small')} 
                         alt={v.title} 
+                        loading="lazy"
+                        decoding="async"
                         className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                       />
                     ) : (
@@ -857,11 +882,11 @@ export default function LibraryPage() {
           })}
         </div>
       ) : (
-        /* TABLE VIEW */
+        /* TABLE VIEW WITH VIRTUALIZATION */
         <div className="bg-surface border border-border rounded-xl overflow-hidden shadow-xs">
-          <div className="overflow-x-auto">
+          <div ref={tableContainerRef} className="overflow-x-auto max-h-[640px] overflow-y-auto">
             <table className="w-full text-left text-xs">
-              <thead className="bg-surface-elevated/70 border-b border-border text-text-muted font-mono uppercase text-[10px]">
+              <thead className="bg-surface-elevated/95 backdrop-blur-xs sticky top-0 z-10 border-b border-border text-text-muted font-mono uppercase text-[10px]">
                 <tr>
                   <th className="p-3 pl-4 w-10">
                     <button
@@ -884,12 +909,21 @@ export default function LibraryPage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-border/60 font-sans">
-                {videos.map((v) => {
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr style={{ height: `${rowVirtualizer.getVirtualItems()[0].start}px` }}>
+                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
+                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                  const v = videos[virtualRow.index];
+                  if (!v) return null;
                   const isSelected = selectedIds.includes(v.id);
 
                   return (
                     <tr 
                       key={v.id} 
+                      data-index={virtualRow.index}
+                      ref={rowVirtualizer.measureElement}
                       className={cn(
                         "hover:bg-surface-elevated/40 transition-colors group",
                         isSelected && "bg-accent/5"
@@ -915,7 +949,13 @@ export default function LibraryPage() {
                           className="w-14 h-10 bg-black rounded border border-border/80 overflow-hidden relative cursor-pointer group/thumb"
                         >
                           {v.thumbnail_url ? (
-                            <img src={v.thumbnail_url} alt="" className="w-full h-full object-cover" />
+                            <img 
+                              src={getOptimizedThumbnail(v.thumbnail_url, 'small')} 
+                              alt="" 
+                              loading="lazy"
+                              decoding="async"
+                              className="w-full h-full object-cover" 
+                            />
                           ) : (
                             <Film className="w-4 h-4 m-auto text-text-muted opacity-50" />
                           )}
@@ -1026,6 +1066,18 @@ export default function LibraryPage() {
                     </tr>
                   );
                 })}
+                {rowVirtualizer.getVirtualItems().length > 0 && (
+                  <tr
+                    style={{
+                      height: `${
+                        rowVirtualizer.getTotalSize() -
+                        rowVirtualizer.getVirtualItems()[rowVirtualizer.getVirtualItems().length - 1].end
+                      }px`,
+                    }}
+                  >
+                    <td colSpan={6} style={{ padding: 0, border: 0 }} />
+                  </tr>
+                )}
               </tbody>
             </table>
           </div>
