@@ -277,4 +277,21 @@ class TagPerformanceResponse(BaseModel):
     tags: List[TagPerformanceItem]
 
 
+class GlobalSearchResultItem(BaseModel):
+    id: str
+    title: Optional[str] = None
+    description: Optional[str] = None
+    tags: List[str] = Field(default=[])
+    status: Optional[str] = None
+    thumbnail_url: Optional[str] = None
+    youtube_url: Optional[str] = None
+    match_field: Literal["title", "tags", "description", "all"] = "all"
+
+
+class GlobalSearchResponse(BaseModel):
+    query: str
+    results: List[GlobalSearchResultItem]
+    total: int
+
+
 

@@ -2,12 +2,15 @@ import React, { useState, useEffect, useRef } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { 
   Search, LayoutDashboard, Library, Calendar, 
-  Activity, Link2, Terminal, Settings, ArrowRight, X, Plus 
+  Activity, Link2, Terminal, Settings, ArrowRight, X, Plus, Film, Tag
 } from 'lucide-react';
+import { dashboardApi } from '../../api/dashboard';
 
 export function CommandPalette({ isOpen, onClose }) {
   const [search, setSearch] = useState('');
   const [selectedIndex, setSelectedIndex] = useState(0);
+  const [videoResults, setVideoResults] = useState([]);
+  const [isSearching, setIsSearching] = useState(false);
   const navigate = useNavigate();
   const inputRef = useRef(null);
 
@@ -22,33 +25,66 @@ export function CommandPalette({ isOpen, onClose }) {
     { id: 'settings', label: 'Go to Settings', icon: Settings, path: '/settings', group: 'Navigation' },
   ];
 
-  const filtered = actions.filter((a) =>
+  const filteredActions = actions.filter((a) =>
     a.label.toLowerCase().includes(search.toLowerCase())
   );
+
+  useEffect(() => {
+    if (!search.trim()) {
+      setVideoResults([]);
+      setIsSearching(false);
+      return;
+    }
+
+    const timer = setTimeout(async () => {
+      setIsSearching(true);
+      try {
+        const data = await dashboardApi.searchVideos(search.trim());
+        const items = (data?.results || []).map((v) => ({
+          id: `video-${v.id}`,
+          label: v.title || 'Untitled Video',
+          subtitle: v.tags?.length ? `#${v.tags.join(' #')}` : (v.status || 'video'),
+          icon: Film,
+          path: '/library',
+          group: 'Videos'
+        }));
+        setVideoResults(items);
+      } catch (err) {
+        console.debug('Search query error:', err);
+      } finally {
+        setIsSearching(false);
+      }
+    }, 200);
+
+    return () => clearTimeout(timer);
+  }, [search]);
+
+  const allItems = [...filteredActions, ...videoResults];
 
   useEffect(() => {
     if (isOpen) {
       setSearch('');
       setSelectedIndex(0);
+      setVideoResults([]);
       setTimeout(() => inputRef.current?.focus(), 50);
     }
   }, [isOpen]);
 
   useEffect(() => {
     setSelectedIndex(0);
-  }, [search]);
+  }, [search, videoResults.length]);
 
   const handleKeyDown = (e) => {
     if (e.key === 'ArrowDown') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev + 1) % (filtered.length || 1));
+      setSelectedIndex((prev) => (prev + 1) % (allItems.length || 1));
     } else if (e.key === 'ArrowUp') {
       e.preventDefault();
-      setSelectedIndex((prev) => (prev - 1 + filtered.length) % (filtered.length || 1));
+      setSelectedIndex((prev) => (prev - 1 + allItems.length) % (allItems.length || 1));
     } else if (e.key === 'Enter') {
       e.preventDefault();
-      if (filtered[selectedIndex]) {
-        navigate(filtered[selectedIndex].path);
+      if (allItems[selectedIndex]) {
+        navigate(allItems[selectedIndex].path);
         onClose();
       }
     } else if (e.key === 'Escape') {
@@ -92,13 +128,18 @@ export function CommandPalette({ isOpen, onClose }) {
         </div>
 
         {/* Results List */}
-        <div className="max-h-72 overflow-y-auto p-2">
-          {filtered.length === 0 ? (
+        <div className="max-h-80 overflow-y-auto p-2">
+          {isSearching && (
+            <div className="px-3 py-1.5 text-[11px] text-accent font-mono">
+              Searching videos...
+            </div>
+          )}
+          {allItems.length === 0 ? (
             <div className="p-6 text-center text-xs text-text-muted">
               No results found for &ldquo;{search}&rdquo;
             </div>
           ) : (
-            filtered.map((item, idx) => {
+            allItems.map((item, idx) => {
               const Icon = item.icon;
               const isSelected = idx === selectedIndex;
               return (
@@ -109,17 +150,24 @@ export function CommandPalette({ isOpen, onClose }) {
                     onClose();
                   }}
                   onMouseEnter={() => setSelectedIndex(idx)}
-                  className={`flex items-center justify-between px-3 py-2.5 rounded-lg text-sm cursor-pointer transition-colors ${
+                  className={`flex items-center justify-between px-3 py-2 rounded-lg text-sm cursor-pointer transition-colors ${
                     isSelected
                       ? 'bg-accent text-accent-foreground font-medium'
                       : 'text-text hover:bg-surface-elevated'
                   }`}
                 >
-                  <div className="flex items-center gap-3">
-                    <Icon className={`w-4 h-4 ${isSelected ? 'text-accent-foreground' : 'text-text-muted'}`} />
-                    <span>{item.label}</span>
+                  <div className="flex items-center gap-3 min-w-0 pr-2">
+                    <Icon className={`w-4 h-4 shrink-0 ${isSelected ? 'text-accent-foreground' : 'text-text-muted'}`} />
+                    <div className="min-w-0">
+                      <p className="truncate text-xs font-medium">{item.label}</p>
+                      {item.subtitle && (
+                        <p className={`text-[10px] font-mono truncate ${isSelected ? 'text-accent-foreground/80' : 'text-text-muted'}`}>
+                          {item.subtitle}
+                        </p>
+                      )}
+                    </div>
                   </div>
-                  <div className="flex items-center gap-2">
+                  <div className="flex items-center gap-2 shrink-0">
                     <span className={`text-[10px] font-mono uppercase px-1.5 py-0.5 rounded ${
                       isSelected ? 'bg-black/20 text-accent-foreground' : 'bg-surface-elevated text-text-muted'
                     }`}>

@@ -1,11 +1,11 @@
 import React from 'react';
-import { Menu, Plus, Search } from 'lucide-react';
+import { Menu, Plus, Search, Sun, Moon } from 'lucide-react';
 import { useAppStore } from '../../stores/appStore';
 import { useNavigate } from 'react-router-dom';
 import { NotificationCenter } from './NotificationCenter';
 
 export default function Topbar({ onOpenCommandPalette }) {
-  const { setSidebarOpen } = useAppStore();
+  const { setSidebarOpen, theme, toggleTheme } = useAppStore();
   const navigate = useNavigate();
 
   return (
@@ -41,6 +41,21 @@ export default function Topbar({ onOpenCommandPalette }) {
           aria-label="Search"
         >
           <Search className="w-4 h-4" />
+        </button>
+
+        {/* Theme Toggle Button */}
+        <button
+          type="button"
+          onClick={toggleTheme}
+          aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          title={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}
+          className="p-2 text-text-muted hover:text-text rounded-lg hover:bg-surface-elevated transition-colors cursor-pointer focus-visible:ring-2 focus-visible:ring-accent focus:outline-none"
+        >
+          {theme === 'dark' ? (
+            <Sun className="w-4 h-4 text-warning" />
+          ) : (
+            <Moon className="w-4 h-4 text-accent" />
+          )}
         </button>
 
         {/* In-App Notification Center */}

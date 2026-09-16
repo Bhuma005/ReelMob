@@ -46,3 +46,40 @@
   --duration-standard: 250ms;
   --duration-page: 400ms;
 }
+
+[data-theme="light"] {
+  /* Surface & Canvas Tokens */
+  --bg-canvas: #f8fafc;
+  --bg-surface: #ffffff;
+  --bg-surface-elevated: #f1f5f9;
+  --bg-surface-hover: #e2e8f0;
+  --bg-surface-active: #cbd5e1;
+
+  /* Border Tokens */
+  --border: #e2e8f0;
+  --border-subtle: rgba(0, 0, 0, 0.08);
+  --border-focus: #d97706;
+
+  /* Typography Tokens */
+  --text: #0f172a;
+  --text-muted: #475569;
+  --text-subtle: #64748b;
+  --text-inverse: #f8fafc;
+
+  /* Brand & Accent Tokens */
+  --accent: #d97706;
+  --accent-hover: #b45309;
+  --accent-muted: rgba(217, 119, 6, 0.15);
+  --accent-foreground: #ffffff;
+
+  /* Semantic Status Tokens */
+  --success: #059669;
+  --success-muted: rgba(5, 150, 105, 0.15);
+  --warning: #d97706;
+  --warning-muted: rgba(217, 119, 6, 0.15);
+  --danger: #dc2626;
+  --danger-muted: rgba(220, 38, 38, 0.15);
+  --info: #2563eb;
+  --info-muted: rgba(37, 99, 235, 0.15);
+}
+

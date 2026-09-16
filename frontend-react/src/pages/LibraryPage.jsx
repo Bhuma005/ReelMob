@@ -13,7 +13,7 @@ import { VideoEditorModal } from '../components/video/VideoEditorModal';
 import { 
   Trash2, Film, RefreshCw, CheckCircle2, AlertTriangle, CloudOff, 
   Search, ChevronLeft, ChevronRight, ExternalLink, Play, 
-  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors, Tag
+  Clock, LayoutGrid, List, CheckSquare, Square, RotateCcw, Scissors, Tag, Download, FileText
 } from 'lucide-react';
 import { format, formatDistanceToNow } from 'date-fns';
 import { toast } from 'sonner';
@@ -125,6 +125,81 @@ function InlineTagEditor({ videoId, tags = [], onUpdateTags }) {
   );
 }
 
+function BulkTagModal({ isOpen, count, onClose, onApply }) {
+  const [tag, setTag] = useState('');
+  const [isSubmitting, setIsSubmitting] = useState(false);
+
+  if (!isOpen) return null;
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const clean = tag.trim().toLowerCase();
+    if (!clean) return;
+    if (!/^[a-zA-Z0-9_\-]+$/.test(clean)) {
+      toast.error('Tags can only contain alphanumeric characters, underscores, and dashes');
+      return;
+    }
+    if (clean.length > 30) {
+      toast.error('Tag must be 30 characters or fewer');
+      return;
+    }
+    setIsSubmitting(true);
+    try {
+      await onApply(clean);
+      setTag('');
+      onClose();
+    } catch (err) {
+      toast.error('Failed to apply tags: ' + (err.message || 'Error'));
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/75 backdrop-blur-xs">
+      <div className="w-full max-w-sm bg-surface border border-border rounded-xl p-5 space-y-4 shadow-xl">
+        <h3 className="text-sm font-semibold text-text flex items-center gap-2">
+          <Tag className="w-4 h-4 text-accent" />
+          Add Tag to {count} {count === 1 ? 'Video' : 'Videos'}
+        </h3>
+        <p className="text-xs text-text-muted">
+          Enter a tag to append to all selected videos in your library.
+        </p>
+        <form onSubmit={handleSubmit} className="space-y-3">
+          <input
+            type="text"
+            autoFocus
+            value={tag}
+            onChange={(e) => setTag(e.target.value)}
+            placeholder="e.g. viral, hook, tutorial"
+            className="w-full bg-surface-elevated border border-border rounded-lg px-3 py-2 text-xs text-text font-mono placeholder:text-text-muted focus:outline-none focus:border-accent"
+          />
+          <div className="flex items-center justify-end gap-2 pt-2">
+            <Button
+              type="button"
+              variant="ghost"
+              size="sm"
+              onClick={onClose}
+              disabled={isSubmitting}
+              className="text-xs"
+            >
+              Cancel
+            </Button>
+            <Button
+              type="submit"
+              size="sm"
+              disabled={isSubmitting || !tag.trim()}
+              className="text-xs bg-accent text-accent-foreground hover:bg-accent/90"
+            >
+              {isSubmitting ? 'Applying...' : 'Apply Tag'}
+            </Button>
+          </div>
+        </form>
+      </div>
+    </div>
+  );
+}
+
 export default function LibraryPage() {
   const queryClient = useQueryClient();
   const [viewMode, setViewMode] = useState('grid'); // 'grid' | 'table'
@@ -141,6 +216,7 @@ export default function LibraryPage() {
   const [publishingVideo, setPublishingVideo] = useState(null);
   const [deletingVideo, setDeletingVideo] = useState(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
+  const [isBulkTagging, setIsBulkTagging] = useState(false);
 
   const limit = viewMode === 'grid' ? 12 : 20;
 
@@ -204,6 +280,66 @@ export default function LibraryPage() {
       queryClient.invalidateQueries(['dashboardStats']);
     } catch (err) {
       toast.error('Bulk deletion failed: ' + err.message);
+    }
+  };
+
+  const handleBulkTag = async (newTag) => {
+    if (selectedIds.length === 0) return;
+    try {
+      const updates = selectedIds.map(id => {
+        const vid = rawVideos.find(v => v.id === id);
+        const existingTags = Array.isArray(vid?.tags) ? vid.tags : [];
+        if (!existingTags.includes(newTag)) {
+          const nextTags = [...existingTags, newTag];
+          return dashboardApi.updateVideoTags(id, nextTags);
+        }
+        return Promise.resolve();
+      });
+      await Promise.all(updates);
+      queryClient.invalidateQueries({ queryKey: ['dashboardVideos'] });
+      queryClient.invalidateQueries({ queryKey: ['dashboardAnalyticsTags'] });
+      toast.success(`Tagged ${selectedIds.length} videos with #${newTag}`);
+      setIsBulkTagging(false);
+    } catch (err) {
+      toast.error('Bulk tagging failed: ' + (err.message || 'Error'));
+    }
+  };
+
+  const handleBulkExport = (exportType) => {
+    if (selectedIds.length === 0) return;
+    const selectedVideos = rawVideos.filter(v => selectedIds.includes(v.id));
+    if (selectedVideos.length === 0) return;
+
+    if (exportType === 'json') {
+      const dataStr = JSON.stringify(selectedVideos, null, 2);
+      const blob = new Blob([dataStr], { type: 'application/json' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `reelsmob_videos_${Date.now()}.json`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${selectedVideos.length} videos as JSON`);
+    } else {
+      const headers = ['id', 'title', 'status', 'created_at', 'schedule_time', 'tags', 'youtube_url'];
+      const rows = selectedVideos.map(v => [
+        `"${(v.id || '').replace(/"/g, '""')}"`,
+        `"${(v.title || '').replace(/"/g, '""')}"`,
+        `"${(v.status || '').replace(/"/g, '""')}"`,
+        `"${(v.created_at || '').replace(/"/g, '""')}"`,
+        `"${(v.schedule_time || v.scheduled_time || '').replace(/"/g, '""')}"`,
+        `"${(Array.isArray(v.tags) ? v.tags.join(';') : '').replace(/"/g, '""')}"`,
+        `"${(v.youtube_url || '').replace(/"/g, '""')}"`
+      ].join(','));
+      const csvContent = [headers.join(','), ...rows].join('\n');
+      const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `reelsmob_videos_${Date.now()}.csv`;
+      link.click();
+      URL.revokeObjectURL(url);
+      toast.success(`Exported ${selectedVideos.length} videos as CSV`);
     }
   };
 
@@ -445,6 +581,38 @@ export default function LibraryPage() {
               className="text-xs h-7 text-text-muted cursor-pointer"
             >
               Deselect
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => setIsBulkTagging(true)}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+            >
+              <Tag className="w-3.5 h-3.5" />
+              Tag Selected
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleBulkExport('csv')}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+              title="Export selected videos as CSV"
+            >
+              <Download className="w-3.5 h-3.5" />
+              CSV
+            </Button>
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              onClick={() => handleBulkExport('json')}
+              className="text-xs h-7 border-border hover:border-accent hover:text-accent cursor-pointer flex items-center gap-1"
+              title="Export selected videos as JSON"
+            >
+              <FileText className="w-3.5 h-3.5" />
+              JSON
             </Button>
             <Button
               type="button"
@@ -948,6 +1116,14 @@ export default function LibraryPage() {
         isLoading={deleteMutation.isPending}
         onClose={() => setDeletingVideo(null)}
         onConfirm={() => deletingVideo && deleteMutation.mutate(deletingVideo.id)}
+      />
+
+      {/* Bulk Tag Dialog */}
+      <BulkTagModal
+        isOpen={isBulkTagging}
+        count={selectedIds.length}
+        onClose={() => setIsBulkTagging(false)}
+        onApply={handleBulkTag}
       />
 
       {/* Bulk Delete Confirmation Dialog */}
