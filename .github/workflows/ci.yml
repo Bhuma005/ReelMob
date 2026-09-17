@@ -35,13 +35,14 @@ jobs:
 
       - name: Run Pytest Suite
         env:
+          PYTHONPATH: .
           ENVIRONMENT: test
           SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://mock.supabase.co' }}
           SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || 'mock-key-for-tests' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || 'mock-groq-key' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'mock-gemini-key' }}
         run: |
-          pytest backend/tests/ -v
+          python -m pytest backend/tests/ -v
 
   frontend-build:
     name: Frontend Build & Test
