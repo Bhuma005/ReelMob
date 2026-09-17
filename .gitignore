@@ -48,3 +48,4 @@ reelgrab_audit.log
 backend/ffprobe.exe
 cookies.txt
 backend/cookies.txt
+/ffmpeg-ext/

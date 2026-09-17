@@ -1132,9 +1132,11 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
             f.write(res_down)
 
         # 2. Run FFmpeg (blur background padding technique)
+        from backend.fit_to_canvas import get_ff_paths
+        ffmpeg_bin, _ = get_ff_paths()
         filter_complex = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,boxblur=20:20,crop={W}:{H}[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={W}/{H}"
         cmd = [
-            "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else "ffmpeg",
+            ffmpeg_bin,
             "-y", "-i", temp_in,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -1826,7 +1828,8 @@ async def health_check():
             health["services"]["disk"] = {"status": "warning", "message": str(e)}
 
         # 5. FFmpeg check
-        ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+        from backend.fit_to_canvas import resolve_ffmpeg_binary
+        ffmpeg_bin = resolve_ffmpeg_binary()
         if not ffmpeg_bin:
             health["services"]["ffmpeg"] = {"status": "warning", "message": "FFmpeg not detected"}
 
@@ -1904,7 +1907,8 @@ async def health_check_detailed():
         dependencies["disk"] = {"status": "error", "message": str(e)}
 
     # 6. FFmpeg availability
-    ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+    from backend.fit_to_canvas import resolve_ffmpeg_binary
+    ffmpeg_bin = resolve_ffmpeg_binary()
     dependencies["ffmpeg"] = {
         "status": "ok" if ffmpeg_bin else "missing",
         "path": ffmpeg_bin or "Not Found"

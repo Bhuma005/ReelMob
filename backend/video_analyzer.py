@@ -95,8 +95,9 @@ def extract_video_frames(video_path: str, num_frames: int = 5, max_dim: int = 51
     except Exception as e:
         logger.debug(f'cv2 frame extraction skipped: {e}')
 
-    ffmpeg_exe = os.path.join(os.path.dirname(__file__), 'ffmpeg.exe')
-    if os.path.exists(ffmpeg_exe):
+    from backend.fit_to_canvas import resolve_ffmpeg_binary
+    ffmpeg_exe = resolve_ffmpeg_binary()
+    if ffmpeg_exe:
         try:
             import subprocess, tempfile
             with tempfile.TemporaryDirectory() as tmpdir:
