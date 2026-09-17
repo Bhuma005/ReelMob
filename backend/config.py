@@ -55,8 +55,18 @@ else:
         CORS_ORIGINS.append("*")
 
 # Cloud Credentials
-SUPABASE_URL = os.getenv("SUPABASE_URL", "")
-SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "")
+def _clean_supabase_url(url: str) -> str:
+    if not url:
+        return ""
+    clean = url.strip().strip("'\"").rstrip("/")
+    if clean.endswith("/rest/v1"):
+        clean = clean[:-len("/rest/v1")].rstrip("/")
+    elif clean.endswith("/rest"):
+        clean = clean[:-len("/rest")].rstrip("/")
+    return clean
+
+SUPABASE_URL = _clean_supabase_url(os.getenv("SUPABASE_URL", ""))
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip().strip("'\"")
 YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")

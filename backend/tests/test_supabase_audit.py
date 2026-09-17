@@ -11,6 +11,8 @@ import pytest
 from cloud.cloud_auth import (
     validate_supabase_config,
     get_supabase_client,
+    normalize_supabase_url,
+    normalize_supabase_key,
 )
 import cloud.cloud_auth as cloud_auth_module
 
@@ -57,6 +59,16 @@ class TestSupabaseConfigValidation:
         res = validate_supabase_config(fail_fast=False)
         assert res["valid"] is True
         assert len(res["errors"]) == 0
+
+    def test_url_normalization_with_rest_v1_and_trailing_slashes(self):
+        # Prevents PostgREST PGRST125 path duplication
+        assert normalize_supabase_url("https://xyz.supabase.co/rest/v1") == "https://xyz.supabase.co"
+        assert normalize_supabase_url("https://xyz.supabase.co/rest/v1/") == "https://xyz.supabase.co"
+        assert normalize_supabase_url("https://xyz.supabase.co/rest") == "https://xyz.supabase.co"
+        assert normalize_supabase_url("https://xyz.supabase.co/") == "https://xyz.supabase.co"
+        assert normalize_supabase_url("\"https://xyz.supabase.co/rest/v1\"") == "https://xyz.supabase.co"
+        assert normalize_supabase_url("'https://xyz.supabase.co'") == "https://xyz.supabase.co"
+        assert normalize_supabase_key("  'my-secret-key'  ") == "my-secret-key"
 
 
 class TestSupabaseClientCaching:
