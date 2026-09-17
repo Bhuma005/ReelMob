@@ -10,6 +10,8 @@ pinned: false
 
 # ReelsMob — AI Video Analysis & YouTube Shorts Publisher
 
+[![CI](https://github.com/Bhuma005/ReelMob/actions/workflows/ci.yml/badge.svg)](https://github.com/Bhuma005/ReelMob/actions/workflows/ci.yml)
+
 Automated Instagram Reels to YouTube Shorts studio powered by:
 - **Google Gemini 3.6 Flash**: Deep video & scene understanding
 - **Groq Cloud**: Sub-second viral metadata generation
