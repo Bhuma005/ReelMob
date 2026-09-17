@@ -66,6 +66,12 @@ def _fetch_channel_name(access_token: str) -> str:
         logger.warning(f"Channel name fetch error (token may be expired): {e}")
     return "YouTube Channel"
 
+def _get_public_base_url() -> str:
+    return os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
+
+def _get_redirect_uri() -> str:
+    return f"{_get_public_base_url()}/auth/callback"
+
 # ── routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/auth/status")
@@ -89,9 +95,8 @@ async def login_youtube():
         secrets = _load_secrets()
         client_id = secrets["client_id"]
         scope = "%20".join(SCOPES)
-        redirect_uri = "http://localhost:8000/auth/callback"
-        # NOTE: Add http://localhost:8000/auth/callback to your
-        # Google Cloud Console → OAuth 2.0 Client ID → Authorized redirect URIs
+        redirect_uri = _get_redirect_uri()
+        # NOTE: Add your redirect_uri to Google Cloud Console Authorized redirect URIs
         auth_url = (
             f"https://accounts.google.com/o/oauth2/auth"
             f"?client_id={client_id}"
@@ -121,7 +126,7 @@ async def auth_callback(request: Request):
         secrets = _load_secrets()
         client_id = secrets["client_id"]
         client_secret = secrets["client_secret"]
-        redirect_uri = "http://localhost:8000/auth/callback"
+        redirect_uri = _get_redirect_uri()
 
         # Exchange code for tokens
         token_data = json.dumps({
@@ -164,7 +169,7 @@ async def auth_callback(request: Request):
           <div class="card">
             <h2>✅ Connected Successfully!</h2>
             <p>Channel: <strong style="color:white">{channel_name}</strong></p>
-            <a href="http://127.0.0.1:9090">← Back to ReelGrab</a>
+            <a href="/">← Back to ReelsMob</a>
           </div>
         </body>
         </html>
@@ -172,7 +177,7 @@ async def auth_callback(request: Request):
 
     except Exception as e:
         logger.error(f"Callback error: {e}")
-        return HTMLResponse(f"<h2 style='color:red'>Error: {e}</h2><a href='http://127.0.0.1:9090'>Go back</a>")
+        return HTMLResponse(f"<h2 style='color:red'>Error: {e}</h2><a href='/'>Go back</a>")
 
 
 @router.get("/auth/logout")

@@ -12,8 +12,8 @@ from typing import Optional
 
 # ── Model selection ─────────────────────────────────────────────────────────
 def _get_best_model() -> str:
-    """Return the explicitly targeted model for ReelGrab AI processing."""
-    return "qwen2.5:7b"
+    """Return the explicitly targeted cloud model for ReelGrab AI processing."""
+    return "groq/compound-mini"
 
 SYSTEM_PROMPT = """You are ReelGrab's Advanced YouTube Shorts Intelligence Engine.
 
@@ -136,49 +136,17 @@ def _validate_and_fix(parsed: dict, fallback_title: str, scraped_hashtags: list 
     parsed.update(compat_parsed)
     return parsed
 
-def _call_ollama(model: str, user_prompt: str, temperature: float = 0.8, max_retries: int = 2) -> dict:
-    """Call Ollama with retry + strict JSON validation."""
-    # Use lighter system prompt for tiny models
-    system = SYSTEM_PROMPT_LITE if "0.5b" in model else SYSTEM_PROMPT
-    timeout = 90.0 if "0.5b" in model else 300.0
-
-    payload = {
-        "model": model,
-        "system": system,
-        "prompt": user_prompt,
-        "format": "json",
-        "stream": False,
-        "options": {
-            "temperature": temperature,
-            "num_predict": 400 if "0.5b" in model else 512,
-        }
-    }
-
-    last_err = None
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:11434/api/generate",
-                data=json.dumps(payload).encode("utf-8"),
-                method="POST",
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as res:
-                result = json.loads(res.read())
-                raw = result.get("response", "{}")
-                # Strip any accidental markdown fences
-                raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-                raw = re.sub(r"\n?```$", "", raw.strip())
-                return json.loads(raw)
-        except json.JSONDecodeError as e:
-            last_err = e
-            payload["prompt"] = user_prompt + "\n\nIMPORTANT: Return ONLY valid JSON, nothing else."
-        except Exception as e:
-            last_err = e
-            break
-
-    print(f"Ollama call failed after {max_retries} attempts: {last_err}")
-    return {}
+def _call_cloud_llm(model: str, user_prompt: str, temperature: float = 0.8, max_retries: int = 2) -> dict:
+    """Call Cloud LLM (Groq/Gemini) with retry + strict JSON validation."""
+    from backend.agents.llm import call_cloud_llm
+    system = SYSTEM_PROMPT_LITE if "lite" in (model or "").lower() else SYSTEM_PROMPT
+    return call_cloud_llm(
+        model=model,
+        system_prompt=system,
+        user_prompt=user_prompt,
+        temperature=temperature,
+        max_retries=max_retries
+    )
 
 # ── Public API ───────────────────────────────────────────────────────────────
 def generate_shorts_content(
@@ -195,7 +163,7 @@ def generate_shorts_content(
     temperature: float = 0.8,
 ) -> dict:
     """
-    Full pipeline: select model → build prompt → call Ollama → validate → return.
+    Full pipeline: select model → build prompt → call Cloud AI → validate → return.
     Returns a dict with: title, description, hashtags, optimal_schedule_time,
     schedule_reasoning, confidence_notes.
     """
@@ -235,7 +203,7 @@ Original hashtags: {', '.join(hashtags or [])}
 Generate the JSON output now."""
 
     fallback_title = video_title[:97] if video_title else "Watch This Short"
-    parsed = _call_ollama(model, user_prompt, temperature)
+    parsed = _call_cloud_llm(model, user_prompt, temperature)
     
     ai_failed = not parsed or (not parsed.get("viral_title") and not parsed.get("title"))
     parsed = _validate_and_fix(parsed, fallback_title, scraped_hashtags=hashtags)

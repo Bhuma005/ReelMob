@@ -3,7 +3,7 @@ import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { useEffect, lazy, Suspense } from 'react';
 import { useAppStore } from './stores/appStore';
 import { authApi } from './api/auth';
-
+import { fetchApi } from './api/client';
 import AppLayout from './components/layout/AppLayout';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
@@ -43,17 +43,18 @@ function AppBootstrapper({ children }) {
       })
       .catch(() => setYtAuth(false, ""));
 
-    // Check Ollama
-    fetch('http://127.0.0.1:11434/api/tags')
-      .then(r => r.ok ? r.json() : Promise.reject())
+    // Check Cloud AI Engine
+    fetchApi('/api/health/ai')
       .then(data => {
-        if (data.models && data.models.length > 0) {
-          setOllamaStatus(`✅ ${data.models[0].name}`);
+        if (data && data.available) {
+          setOllamaStatus('✅ Cloud AI');
+        } else if (data && data.status === 'keys_missing') {
+          setOllamaStatus('⚠️ Keys Missing');
         } else {
-          setOllamaStatus('⚠️ No Models');
+          setOllamaStatus('⚠️ Fallback Active');
         }
       })
-      .catch(() => setOllamaStatus('🔴 Offline'));
+      .catch(() => setOllamaStatus('🔴 AI Offline'));
   }, [setOllamaStatus, setYtAuth]);
 
   return children;
@@ -76,15 +77,17 @@ export default function App() {
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 
-                {/* Dev component gallery route */}
-                <Route 
-                  path="dev/components" 
-                  element={
-                    <Suspense fallback={<div className="p-8 text-center text-xs text-text-muted">Loading Dev Gallery...</div>}>
-                      <ComponentGallery />
-                    </Suspense>
-                  } 
-                />
+                {/* Dev component gallery route (development only) */}
+                {import.meta.env.DEV && (
+                  <Route 
+                    path="dev/components" 
+                    element={
+                      <Suspense fallback={<div className="p-8 text-center text-xs text-text-muted">Loading Dev Gallery...</div>}>
+                        <ComponentGallery />
+                      </Suspense>
+                    } 
+                  />
+                )}
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>

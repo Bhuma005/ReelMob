@@ -387,44 +387,59 @@ export default function AnalyticsPage() {
           </div>
 
           {/* Benchmark Recharts Line Chart */}
-          <div className="h-64 w-full">
-            <ResponsiveContainer width="100%" height="100%">
-              <LineChart data={trendsData?.trends || []} margin={{ top: 10, right: 15, left: -15, bottom: 0 }}>
-                <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
-                <XAxis 
-                  dataKey="date" 
-                  stroke="#71717a" 
-                  fontSize={11} 
-                  tickLine={false} 
-                  axisLine={false} 
-                />
-                <YAxis 
-                  stroke="#71717a" 
-                  fontSize={11} 
-                  tickLine={false} 
-                  axisLine={false} 
-                />
-                <RechartsTooltip content={<CustomChartTooltip />} />
-                {trendsData?.summary?.rolling_avg_views && (
-                  <ReferenceLine 
-                    y={trendsData.summary.rolling_avg_views} 
-                    stroke="#c084fc" 
-                    strokeDasharray="4 4" 
-                    strokeWidth={1.5}
+          {(!trendsData?.trends || trendsData.trends.length < 2) ? (
+            <div className="h-64 w-full flex flex-col items-center justify-center text-center p-6 bg-surface-elevated/20 rounded-xl border border-dashed border-border min-w-0">
+              <div className="w-10 h-10 rounded-full bg-accent/10 border border-accent/20 flex items-center justify-center mb-3">
+                <Target className="w-5 h-5 text-accent" />
+              </div>
+              <h4 className="text-sm font-semibold text-text mb-1">Insufficient Trend Comparison Data</h4>
+              <p className="text-xs text-text-muted max-w-md mb-3 leading-relaxed">
+                Trend comparison requires at least 2 distinct analytics periods or published reels to calculate comparative trajectory against your rolling baseline.
+              </p>
+              <Button size="sm" variant="secondary" onClick={() => navigate('/create')} className="text-xs">
+                Schedule New Reels
+              </Button>
+            </div>
+          ) : (
+            <div className="h-64 w-full min-w-0">
+              <ResponsiveContainer width="100%" height="100%">
+                <LineChart data={trendsData?.trends || []} margin={{ top: 10, right: 15, left: -15, bottom: 0 }}>
+                  <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />
+                  <XAxis 
+                    dataKey="date" 
+                    stroke="#71717a" 
+                    fontSize={11} 
+                    tickLine={false} 
+                    axisLine={false} 
                   />
-                )}
-                <Line 
-                  type="monotone" 
-                  dataKey="views" 
-                  name="Reel Views" 
-                  stroke="#ff6b2b" 
-                  strokeWidth={2.5} 
-                  dot={{ r: 4, fill: '#ff6b2b', strokeWidth: 0 }}
-                  activeDot={{ r: 6, fill: '#ff6b2b' }}
-                />
-              </LineChart>
-            </ResponsiveContainer>
-          </div>
+                  <YAxis 
+                    stroke="#71717a" 
+                    fontSize={11} 
+                    tickLine={false} 
+                    axisLine={false} 
+                  />
+                  <RechartsTooltip content={<CustomChartTooltip />} />
+                  {trendsData?.summary?.rolling_avg_views && (
+                    <ReferenceLine 
+                      y={trendsData.summary.rolling_avg_views} 
+                      stroke="#c084fc" 
+                      strokeDasharray="4 4" 
+                      strokeWidth={1.5}
+                    />
+                  )}
+                  <Line 
+                    type="monotone" 
+                    dataKey="views" 
+                    name="Reel Views" 
+                    stroke="#ff6b2b" 
+                    strokeWidth={2.5} 
+                    dot={{ r: 4, fill: '#ff6b2b', strokeWidth: 0 }}
+                    activeDot={{ r: 6, fill: '#ff6b2b' }}
+                  />
+                </LineChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </CardContent>
       </Card>
 
@@ -447,7 +462,7 @@ export default function AnalyticsPage() {
           </CardHeader>
 
           <CardContent className="p-6">
-            <div className="h-64 w-full">
+            <div className="h-64 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <AreaChart data={activityData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <defs>
@@ -499,7 +514,7 @@ export default function AnalyticsPage() {
           </CardHeader>
 
           <CardContent className="p-6">
-            <div className="h-64 w-full">
+            <div className="h-64 w-full min-w-0">
               <ResponsiveContainer width="100%" height="100%">
                 <BarChart data={hourlyData} margin={{ top: 10, right: 10, left: -20, bottom: 0 }}>
                   <CartesianGrid strokeDasharray="3 3" stroke="#27272a" vertical={false} />

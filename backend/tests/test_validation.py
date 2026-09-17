@@ -122,3 +122,25 @@ class TestPydanticSchemas:
         # Invalid zero page
         with pytest.raises(ValidationError):
             PaginationParams(page=0, limit=20)
+
+    def test_production_cors_fail_fast(self, monkeypatch):
+        import importlib
+        import backend.config
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        with pytest.raises(RuntimeError, match="CORS_ORIGINS must be set in production"):
+            importlib.reload(backend.config)
+        # Restore development
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        importlib.reload(backend.config)
+
+    def test_production_cors_configured(self, monkeypatch):
+        import importlib
+        import backend.config
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.setenv("CORS_ORIGINS", "https://app.reelsmob.com, https://reelsmob.com")
+        cfg = importlib.reload(backend.config)
+        assert cfg.CORS_ORIGINS == ["https://app.reelsmob.com", "https://reelsmob.com"]
+        # Restore development
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        importlib.reload(backend.config)

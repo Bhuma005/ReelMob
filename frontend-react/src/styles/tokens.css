@@ -41,10 +41,15 @@
   --radius-full: 9999px;
 
   /* Motion & Timing */
+  --ease-out-expo: cubic-bezier(0.16, 1, 0.3, 1);
+  --ease-in-out-cubic: cubic-bezier(0.65, 0, 0.35, 1);
   --ease-standard: cubic-bezier(0.16, 1, 0.3, 1);
   --duration-micro: 150ms;
+  --duration-fast: 150ms;
   --duration-standard: 250ms;
+  --duration-base: 250ms;
   --duration-page: 400ms;
+  --duration-slow: 400ms;
 }
 
 [data-theme="light"] {

@@ -1,4 +1,4 @@
-export const API_BASE = ''; // Proxy handles the routing
+export const API_BASE = import.meta.env.VITE_API_BASE_URL || '';
 
 export async function fetchApi(endpoint, options = {}) {
   const url = `${API_BASE}${endpoint}`;

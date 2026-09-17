@@ -9,15 +9,41 @@ import math
 import argparse
 import subprocess
 import json
+import shutil
+from typing import Optional, Tuple
 
-def get_ff_paths():
-    """Locate ffmpeg and ffprobe."""
-    ffmpeg = os.path.join("backend", "ffmpeg.exe")
-    ffprobe = os.path.join("backend", "ffprobe.exe")
-    if not os.path.exists(ffmpeg):
-        ffmpeg = "ffmpeg"
-    if not os.path.exists(ffprobe):
-        ffprobe = "ffprobe"
+def resolve_ffmpeg_binary() -> Optional[str]:
+    """Resolve ffmpeg executable cross-platform, checking system PATH first."""
+    sys_ffmpeg = shutil.which("ffmpeg")
+    if sys_ffmpeg:
+        return sys_ffmpeg
+    backend_dir = os.path.dirname(__file__) if "__file__" in globals() else "backend"
+    local_ffmpeg_exe = os.path.join(backend_dir, "ffmpeg.exe")
+    if os.path.exists(local_ffmpeg_exe):
+        return local_ffmpeg_exe
+    local_ffmpeg_bin = os.path.join(backend_dir, "ffmpeg")
+    if os.path.exists(local_ffmpeg_bin):
+        return local_ffmpeg_bin
+    return None
+
+def resolve_ffprobe_binary() -> Optional[str]:
+    """Resolve ffprobe executable cross-platform, checking system PATH first."""
+    sys_ffprobe = shutil.which("ffprobe")
+    if sys_ffprobe:
+        return sys_ffprobe
+    backend_dir = os.path.dirname(__file__) if "__file__" in globals() else "backend"
+    local_ffprobe_exe = os.path.join(backend_dir, "ffprobe.exe")
+    if os.path.exists(local_ffprobe_exe):
+        return local_ffprobe_exe
+    local_ffprobe_bin = os.path.join(backend_dir, "ffprobe")
+    if os.path.exists(local_ffprobe_bin):
+        return local_ffprobe_bin
+    return None
+
+def get_ff_paths() -> Tuple[str, str]:
+    """Locate ffmpeg and ffprobe paths, falling back to command names."""
+    ffmpeg = resolve_ffmpeg_binary() or "ffmpeg"
+    ffprobe = resolve_ffprobe_binary() or "ffprobe"
     return ffmpeg, ffprobe
 
 def get_video_dimensions(file_path, ffprobe_path="ffprobe"):

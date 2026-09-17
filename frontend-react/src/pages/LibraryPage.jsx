@@ -703,19 +703,29 @@ export default function LibraryPage() {
       ) : videos.length === 0 ? (
         <Card className="bg-surface border-border p-16 text-center flex flex-col items-center justify-center">
           <Film className="w-12 h-12 text-text-muted opacity-30 mb-3" />
-          <h3 className="text-base font-semibold text-text">No videos found</h3>
+          <h3 className="text-base font-semibold text-text">
+            {searchTerm || selectedTagFilter || activeStatus !== 'all' ? 'No videos match your filters' : 'No videos found'}
+          </h3>
           <p className="text-xs text-text-muted max-w-sm mt-1">
-            {searchTerm ? `No videos match "${searchTerm}" in status "${activeStatus}".` : 'No videos have been added to this filter yet.'}
+            {searchTerm || selectedTagFilter || activeStatus !== 'all'
+              ? 'Try adjusting or clearing your search keywords, active tag filters, or status tab.'
+              : 'No videos have been added to your library yet. Create your first reel to get started.'}
           </p>
-          {searchTerm && (
-            <Button
-              variant="outline"
-              size="sm"
-              onClick={() => setSearchTerm('')}
-              className="mt-4 text-xs cursor-pointer"
-            >
-              Clear Search
-            </Button>
+          {(searchTerm || selectedTagFilter || activeStatus !== 'all') && (
+            <div className="flex items-center gap-2 mt-4">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setSearchTerm('');
+                  setSelectedTagFilter(null);
+                  setActiveStatus('all');
+                }}
+                className="text-xs cursor-pointer"
+              >
+                Clear filters
+              </Button>
+            </div>
           )}
         </Card>
       ) : viewMode === 'grid' ? (

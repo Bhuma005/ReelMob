@@ -678,20 +678,12 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 ANALYSIS_CACHE[content_hash] = result_payload
             return
 
-        # ── 2. Fallback: Ollama Check ──────────────────────────────────────────
-        # Pre-flight check: is Ollama alive?
-        ollama_alive = False
-        try:
-            import urllib.request
-            req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2.5) as resp:
-                if resp.status == 200:
-                    ollama_alive = True
-        except Exception:
-            ollama_alive = False
+        # ── 2. Cloud AI Fallback / Agent Execution ────────────────────────────
+        from backend.services.cloud_ai import GROQ_API_KEY, GEMINI_API_KEY
+        cloud_keys_present = bool(GROQ_API_KEY or GEMINI_API_KEY)
             
-        if not ollama_alive:
-            logger.warning(f"Ollama server not reachable for job {job_id}. Using deterministic fallback metadata.")
+        if not cloud_keys_present:
+            logger.warning(f"Cloud AI keys unconfigured for job {job_id}. Using deterministic fallback metadata.")
             fallback_title = title or "Trending Reel"
             fallback_desc = description or "Watch this trending video! #Shorts #Viral"
             fallback_tags = ["#Shorts", "#Viral", "#Trending", "#Reel"]
@@ -703,7 +695,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "instagram_hashtags": fallback_tags,
                 "title_candidates": [{"strategy": "Original", "title": fallback_title}],
                 "viewer_appeal_score": 75,
-                "title_reason": ["Deterministic fallback (Ollama unavailable)"],
+                "title_reason": ["Deterministic fallback (Cloud AI unconfigured)"],
                 "posting_recommendation": {
                     "human_readable_time": "07:30 PM",
                     "reason": "Standard peak evening engagement slot."
@@ -720,7 +712,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "optimized_description": fallback_desc,
                 "youtube": fallback_tags,
                 "instagram": fallback_tags,
-                "analysis": "Generated using deterministic fallback (Ollama model server is offline).",
+                "analysis": "Generated using deterministic fallback (Cloud AI keys not configured).",
                 "confidence_notes": "FALLBACK",
                 "scheduled_time": "07:30 PM",
                 "raw_result": raw_result,
@@ -1140,9 +1132,11 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
             f.write(res_down)
 
         # 2. Run FFmpeg (blur background padding technique)
+        from backend.fit_to_canvas import get_ff_paths
+        ffmpeg_bin, _ = get_ff_paths()
         filter_complex = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,boxblur=20:20,crop={W}:{H}[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={W}/{H}"
         cmd = [
-            "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else "ffmpeg",
+            ffmpeg_bin,
             "-y", "-i", temp_in,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -1771,7 +1765,7 @@ HEALTH_CACHE = {
     "last_check": 0
 }
 
-@app.get("/api/health", summary="System Health Audit", description="Reports health of Backend, Supabase Database, Storage, Ollama GenAI, and YouTube Auth.")
+@app.get("/api/health", summary="System Health Audit", description="Reports health of Backend, Supabase Database, Storage, Cloud AI, and YouTube Auth.")
 async def health_check():
     import time
     global HEALTH_CACHE
@@ -1790,6 +1784,7 @@ async def health_check():
                 "backend": {"status": "ok", "message": "FastAPI running"},
                 "database": {"status": "ok", "message": "Connected to Supabase DB"},
                 "storage": {"status": "ok", "message": "Storage bucket accessible"},
+                "cloud_ai": {"status": "unknown", "message": ""},
                 "ollama": {"status": "unknown", "message": ""},
                 "youtube": {"status": "unknown", "message": ""},
                 "disk": {"status": "ok", "message": "Storage disk healthy"},
@@ -1804,18 +1799,18 @@ async def health_check():
         except Exception as e:
             health["services"]["database"] = {"status": "warning", "message": f"DB check: {str(e)[:60]}"}
 
-        # 2. Ollama / Cloud AI check
+        # 2. Cloud AI check
         try:
             from backend.services.cloud_ai import is_cloud_ai_available
             if is_cloud_ai_available():
-                health["services"]["ollama"] = {"status": "ok", "message": "ReelsMob Cloud AI active"}
+                ai_status = {"status": "ok", "message": "ReelsMob Cloud AI active"}
             else:
-                req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-                with urllib.request.urlopen(req, timeout=2.0) as resp:
-                    if resp.status == 200:
-                        health["services"]["ollama"] = {"status": "ok", "message": "Ollama active"}
-        except Exception:
-            health["services"]["ollama"] = {"status": "info", "message": "Ollama offline (fallback active)"}
+                ai_status = {"status": "info", "message": "Cloud AI keys missing (fallback active)"}
+        except Exception as e:
+            ai_status = {"status": "info", "message": f"Cloud AI offline (fallback active)"}
+
+        health["services"]["cloud_ai"] = ai_status
+        health["services"]["ollama"] = ai_status  # Backward compatibility alias
 
         # 3. YouTube OAuth check
         yt_creds_path = os.path.join(os.path.dirname(__file__), "youtube_credentials.json")
@@ -1833,7 +1828,8 @@ async def health_check():
             health["services"]["disk"] = {"status": "warning", "message": str(e)}
 
         # 5. FFmpeg check
-        ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+        from backend.fit_to_canvas import resolve_ffmpeg_binary
+        ffmpeg_bin = resolve_ffmpeg_binary()
         if not ffmpeg_bin:
             health["services"]["ffmpeg"] = {"status": "warning", "message": "FFmpeg not detected"}
 
@@ -1883,20 +1879,14 @@ async def health_check_detailed():
     t0 = time.perf_counter()
     try:
         from backend.services.cloud_ai import is_cloud_ai_available
-        if is_cloud_ai_available():
-            latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-            dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "ReelsMob Cloud AI"}
-        else:
-            req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-            with urllib.request.urlopen(req, timeout=2.0) as resp:
-                latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-                if resp.status == 200:
-                    dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "Ollama (local)"}
-                else:
-                    dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "fallback"}
-    except Exception:
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
-        dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "deterministic_fallback"}
+        if is_cloud_ai_available():
+            dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "ReelsMob Cloud AI (Gemini + Groq)"}
+        else:
+            dependencies["ai"] = {"status": "info", "latency_ms": latency_ms, "provider": "Deterministic Fallback (Cloud AI unconfigured)"}
+    except Exception as e:
+        latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "deterministic_fallback", "message": str(e)[:60]}
 
     # 4. YouTube OAuth status
     yt_creds_path = os.path.join(os.path.dirname(__file__), "youtube_credentials.json")
@@ -1917,7 +1907,8 @@ async def health_check_detailed():
         dependencies["disk"] = {"status": "error", "message": str(e)}
 
     # 6. FFmpeg availability
-    ffmpeg_bin = "backend/ffmpeg.exe" if os.path.exists("backend/ffmpeg.exe") else shutil.which("ffmpeg")
+    from backend.fit_to_canvas import resolve_ffmpeg_binary
+    ffmpeg_bin = resolve_ffmpeg_binary()
     dependencies["ffmpeg"] = {
         "status": "ok" if ffmpeg_bin else "missing",
         "path": ffmpeg_bin or "Not Found"
@@ -1948,25 +1939,20 @@ async def health_check_ai():
                 "models": ["gemini-3.6-flash (vision)", "groq/compound-mini (metadata)"],
                 "status": "active"
             }
-    except Exception:
-        pass
-
-    import urllib.request
-    try:
-        req = urllib.request.Request("http://127.0.0.1:11434/api/tags", method="GET")
-        with urllib.request.urlopen(req, timeout=2.5) as resp:
-            if resp.status == 200:
-                return {
-                    "available": True,
-                    "provider": "ollama",
-                    "model": "qwen2.5:7b",
-                    "endpoint": "http://127.0.0.1:11434"
-                }
+        else:
+            return {
+                "available": False,
+                "provider": "ReelsMob Cloud AI",
+                "models": ["gemini-3.6-flash (vision)", "groq/compound-mini (metadata)"],
+                "status": "keys_missing",
+                "error": "GEMINI_API_KEY or GROQ_API_KEY not configured in environment",
+                "fallback_enabled": True
+            }
     except Exception as e:
         return {
             "available": False,
-            "provider": "ollama",
-            "error": "Ollama server not responding on port 11434",
+            "provider": "ReelsMob Cloud AI",
+            "error": str(e),
             "fallback_enabled": True
         }
 
