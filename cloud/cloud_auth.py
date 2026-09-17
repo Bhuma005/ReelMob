@@ -106,13 +106,35 @@ def get_fresh_access_token() -> str:
 _SUPABASE_CLIENT = None
 
 
+def normalize_supabase_url(url: str) -> str:
+    """
+    Normalizes Supabase URL by stripping whitespace, quotes, trailing slashes,
+    and accidental '/rest/v1' or '/rest' subpaths (which PostgREST appends automatically and causes PGRST125).
+    """
+    if not url:
+        return ""
+    clean = url.strip().strip("'\"").rstrip("/")
+    if clean.endswith("/rest/v1"):
+        clean = clean[:-len("/rest/v1")].rstrip("/")
+    elif clean.endswith("/rest"):
+        clean = clean[:-len("/rest")].rstrip("/")
+    return clean
+
+
+def normalize_supabase_key(key: str) -> str:
+    """Strips whitespace and surrounding quotes from the service key."""
+    if not key:
+        return ""
+    return key.strip().strip("'\"")
+
+
 def validate_supabase_config(fail_fast: bool = False) -> dict:
     """
     Validates that SUPABASE_URL and SUPABASE_SERVICE_KEY are properly defined.
     If fail_fast is True, raises ValueError or EnvironmentError.
     """
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    url = normalize_supabase_url(os.getenv("SUPABASE_URL", ""))
+    key = normalize_supabase_key(os.getenv("SUPABASE_SERVICE_KEY", ""))
 
     errors = []
     if not url:
@@ -143,6 +165,7 @@ def get_supabase_client(force_refresh: bool = False):
     Returns an initialised, cached supabase-py Client instance.
     Reads SUPABASE_URL and SUPABASE_SERVICE_KEY from environment variables only (never committed or logged).
     Reuses connection pool across calls unless force_refresh=True.
+    Automatically normalizes URLs to avoid PostgREST PGRST125 path duplication errors.
     """
     global _SUPABASE_CLIENT
 
@@ -156,8 +179,8 @@ def get_supabase_client(force_refresh: bool = False):
 
     validation = validate_supabase_config(fail_fast=True)
 
-    url = os.getenv("SUPABASE_URL", "").strip()
-    key = os.getenv("SUPABASE_SERVICE_KEY", "").strip()
+    url = normalize_supabase_url(os.getenv("SUPABASE_URL", ""))
+    key = normalize_supabase_key(os.getenv("SUPABASE_SERVICE_KEY", ""))
 
     try:
         _SUPABASE_CLIENT = create_client(url, key)
