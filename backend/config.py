@@ -36,23 +36,28 @@ HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "30.0"))
 YTDL_TIMEOUT_SECONDS = float(os.getenv("YTDL_TIMEOUT_SECONDS", "45.0"))
 
 # CORS Configuration
-_raw_cors = os.getenv("CORS_ORIGINS", "")
-if _raw_cors:
+_raw_cors = os.getenv("CORS_ORIGINS", "").strip()
+if ENVIRONMENT == "production":
+    if not _raw_cors:
+        raise RuntimeError("CORS_ORIGINS must be set in production")
     CORS_ORIGINS: List[str] = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()]
 else:
-    # Standard local frontend origins for dev / staging
-    CORS_ORIGINS = [
-        "http://localhost:9090",
-        "http://127.0.0.1:9090",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:8000",
-        "http://127.0.0.1:8000",
-    ]
-    if ENVIRONMENT == "development":
-        CORS_ORIGINS.append("*")
+    if _raw_cors:
+        CORS_ORIGINS: List[str] = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()]
+    else:
+        # Standard local frontend origins for dev / staging
+        CORS_ORIGINS = [
+            "http://localhost:9090",
+            "http://127.0.0.1:9090",
+            "http://localhost:5173",
+            "http://127.0.0.1:5173",
+            "http://localhost:3000",
+            "http://127.0.0.1:3000",
+            "http://localhost:8000",
+            "http://127.0.0.1:8000",
+        ]
+        if ENVIRONMENT == "development":
+            CORS_ORIGINS.append("*")
 
 # Cloud Credentials
 def _clean_supabase_url(url: str) -> str:

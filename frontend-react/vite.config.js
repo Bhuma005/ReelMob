@@ -1,6 +1,16 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
 
+const proxyTarget = process.env.VITE_API_PROXY_TARGET || 'http://localhost:8000';
+const proxyEndpoints = ['/auth', '/formats', '/metadata', '/download', '/download-thumbnail', '/automate', '/api'];
+const proxy = proxyEndpoints.reduce((acc, path) => {
+  acc[path] = {
+    target: proxyTarget,
+    changeOrigin: true,
+  };
+  return acc;
+}, {});
+
 // https://vite.dev/config/
 export default defineConfig({
   plugins: [react()],
@@ -20,15 +30,8 @@ export default defineConfig({
     }
   },
   server: {
-    port: 9090, host: true, // Keeping the same frontend port the user is used to
-    proxy: {
-      '/auth': 'http://127.0.0.1:8000',
-      '/formats': 'http://127.0.0.1:8000',
-      '/metadata': 'http://127.0.0.1:8000',
-      '/download': 'http://127.0.0.1:8000',
-      '/download-thumbnail': 'http://127.0.0.1:8000',
-      '/automate': 'http://127.0.0.1:8000',
-      '/api': 'http://127.0.0.1:8000'
-    }
+    port: 9090,
+    host: true,
+    proxy
   }
 })
