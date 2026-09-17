@@ -51,6 +51,7 @@ from backend.schemas import (
 )
 from backend.automate import router as automate_router
 from backend.youtube_auth import router as yt_auth_router
+from backend.security_headers import SecurityHeadersMiddleware
 
 # Initialize Structured Redacting Logger
 setup_logging()
@@ -61,6 +62,9 @@ validate_config(fail_fast=False)
 
 APP_START_TIME = time.time()
 app = FastAPI(title=APP_NAME, version="2.0.0")
+
+# Security headers middleware
+app.add_middleware(SecurityHeadersMiddleware)
 
 # CORS configuration
 app.add_middleware(
