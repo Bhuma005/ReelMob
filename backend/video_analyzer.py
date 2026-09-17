@@ -11,33 +11,14 @@ logger = logging.getLogger(__name__)
 
 VIDEO_ANALYSIS_CACHE: Dict[str, dict] = {}
 
-VISION_MODEL_CANDIDATES = [
-    'moondream:latest',
-    'moondream',
-    'llava:latest',
-    'llava:7b',
-    'llava',
-    'qwen2.5vl:7b',
-    'qwen2.5vl:3b',
-    'qwen2.5vl',
-    'llama3.2-vision:11b',
-    'llama3.2-vision',
-    'minicpm-v',
-    'bakllava'
-]
-
 def get_installed_vision_model() -> Optional[str]:
+    """Check if Cloud AI vision (Gemini 3.6 Flash) is configured."""
     try:
-        req = urllib.request.Request('http://127.0.0.1:11434/api/tags', method='GET')
-        with urllib.request.urlopen(req, timeout=2.0) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            installed_names = [m.get('name', '') for m in data.get('models', [])]
-            for candidate in VISION_MODEL_CANDIDATES:
-                for installed in installed_names:
-                    if candidate in installed or installed.startswith(candidate):
-                        return installed
+        from backend.services.cloud_ai import GEMINI_API_KEY
+        if GEMINI_API_KEY:
+            return 'gemini-3.6-flash'
     except Exception as e:
-        logger.debug(f'Vision model check error: {e}')
+        logger.debug(f'Cloud vision model check error: {e}')
     return None
 
 def find_video_file_for_request(url: str = '', raw_title: str = '', video_path: str = '') -> Optional[str]:
@@ -153,45 +134,18 @@ def transcribe_audio_dialogue(video_path: str) -> Optional[str]:
 
     return None
 
-def analyze_frames_with_vision(frames_b64: List[str], vision_model: str) -> Optional[str]:
-    if not frames_b64 or not vision_model:
+def analyze_frames_with_vision(frames_b64: List[str], vision_model: str = "gemini-3.6-flash") -> Optional[str]:
+    """Delegates video keyframe analysis to Gemini 3.6 Flash."""
+    if not frames_b64:
         return None
-
-    prompt = (
-        'You are an expert video content analyst. These are sequential frames from a video clip.\n'
-        'Describe what is ACTUALLY happening in the footage:\n'
-        '- Who and what is on screen (actors, people, setting, objects)\n'
-        '- Actions, physical gestures, and emotional expressions\n'
-        '- Any visible text overlays or subtitles\n'
-        '- The core story moment, twist, or mood (e.g. romance, heartbreak, comedy, suspense)\n'
-        'Provide a concise, factual 2-3 sentence visual summary.'
-    )
-
-    payload = {
-        'model': vision_model,
-        'prompt': prompt,
-        'images': [frames_b64[min(1, len(frames_b64)-1)]],  # 1 key frame for optimal CPU inference speed
-        'stream': False,
-        'options': {
-            'temperature': 0.2,
-            'num_predict': 90,
-            'num_thread': 8,
-        }
-    }
-
     try:
-        req = urllib.request.Request(
-            'http://127.0.0.1:11434/api/generate',
-            data=json.dumps(payload).encode('utf-8'),
-            method='POST',
-            headers={'Content-Type': 'application/json'}
-        )
-        with urllib.request.urlopen(req, timeout=120.0) as resp:
-            data = json.loads(resp.read().decode('utf-8'))
-            return data.get('response', '').strip()
+        from backend.services.cloud_ai import analyze_frames_with_gemini
+        res = analyze_frames_with_gemini(frames_b64)
+        if res.get("success"):
+            return res.get("visual_summary")
     except Exception as e:
-        logger.warning(f'Vision model error with {vision_model}: {e}')
-        return None
+        logger.warning(f"Cloud vision analysis error: {e}")
+    return None
 
 def analyze_video_content(
     video_path: Optional[str] = None,
@@ -220,7 +174,7 @@ def analyze_video_content(
             progress_callback(30, 'Extracting video frames for visual analysis...')
         frames = extract_video_frames(resolved_path, num_frames=5)
         
-        # 1. First priority: High-speed Cloud AI (Gemini 3.6 Flash)
+        # 1. Cloud AI (Gemini 3.6 Flash)
         try:
             from backend.services.cloud_ai import is_cloud_ai_available, analyze_frames_with_gemini
             if is_cloud_ai_available() and frames:
@@ -234,17 +188,6 @@ def analyze_video_content(
                     logger.info(f'Gemini Cloud Vision analysis completed: {visual_description[:100]}...')
         except Exception as e:
             logger.warning(f'Cloud vision attempt error: {e}')
-
-        # 2. Local vision model fallback if cloud not available
-        if not vision_success and frames and vision_model:
-            if progress_callback:
-                progress_callback(45, f'Analyzing visual frames with local vision model ({vision_model})...')
-            visual_description = analyze_frames_with_vision(frames, vision_model)
-            if visual_description:
-                vision_success = True
-                logger.info(f'Local vision analysis completed: {visual_description[:100]}...')
-        elif not vision_success and not vision_model:
-            logger.info('No local vision model found in Ollama.')
 
         if progress_callback:
             progress_callback(60, 'Extracting audio and dialogue cues...')
@@ -272,7 +215,7 @@ def analyze_video_content(
         'analysis_source': analysis_source,
         'source_label': source_label,
         'video_path': resolved_path,
-        'vision_hint': 'To enable visual frame understanding, run: ollama pull qwen2.5vl:7b or ollama pull llava' if not vision_model else None
+        'vision_hint': 'Configure GEMINI_API_KEY in environment to enable visual frame understanding.' if not vision_success else None
     }
 
     VIDEO_ANALYSIS_CACHE[cache_key] = result

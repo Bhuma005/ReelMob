@@ -2,55 +2,89 @@ import json
 import re
 import urllib.request
 import logging
+import os
+from backend.services.cloud_ai import (
+    GROQ_API_KEY,
+    GEMINI_API_KEY,
+    GROQ_MODEL,
+    GEMINI_MODEL,
+)
 
 logger = logging.getLogger(__name__)
 
 def get_optimal_model() -> str:
-    """Return user's chosen high-intelligence model."""
-    return "qwen2.5:7b"
+    """Return user's chosen high-intelligence cloud model."""
+    return GROQ_MODEL
 
-def call_ollama(model: str = None, system_prompt: str = "", user_prompt: str = "", temperature: float = 0.7, max_retries: int = 2) -> dict:
-    """Call local Qwen 2.5 7B via Ollama with strict JSON enforcement and single retry."""
-    if not model:
-        model = "qwen2.5:7b"
+def call_cloud_llm(model: str = None, system_prompt: str = "", user_prompt: str = "", temperature: float = 0.7, max_retries: int = 2) -> dict:
+    """
+    Call Cloud LLM (Groq groq/compound-mini with Gemini 3.6 Flash fallback)
+    with strict JSON enforcement and retries.
+    """
+    selected_groq_model = model if model and "/" in model else GROQ_MODEL
 
-    timeout = 75.0
-
-    payload = {
-        "model": model,
-        "system": system_prompt,
-        "prompt": user_prompt,
-        "format": "json",
-        "stream": False,
-        "options": {
+    # 1. Primary: Groq API
+    if GROQ_API_KEY:
+        payload = json.dumps({
+            "model": selected_groq_model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            "response_format": {"type": "json_object"},
             "temperature": temperature,
-            "num_predict": 260,
-            "num_thread": 8,
-        }
-    }
+            "max_tokens": 1000
+        }).encode("utf-8")
 
-    last_err = None
-    for attempt in range(max_retries):
-        try:
-            req = urllib.request.Request(
-                "http://127.0.0.1:11434/api/generate",
-                data=json.dumps(payload).encode("utf-8"),
-                method="POST",
-                headers={"Content-Type": "application/json"}
-            )
-            with urllib.request.urlopen(req, timeout=timeout) as res:
-                result = json.loads(res.read())
-                raw = result.get("response", "{}")
-                raw = re.sub(r"^```[a-z]*\n?", "", raw.strip())
-                raw = re.sub(r"\n?```$", "", raw.strip())
-                return json.loads(raw)
-        except json.JSONDecodeError as e:
-            last_err = e
-            # On parse error, retry once with explicit strict JSON reminder
-            payload["prompt"] = user_prompt + "\n\nCRITICAL: Return ONLY valid JSON matching schema. Do not truncate."
-        except Exception as e:
-            last_err = e
-            break
+        req = urllib.request.Request(
+            "https://api.groq.com/openai/v1/chat/completions",
+            data=payload,
+            headers={
+                "Authorization": f"Bearer {GROQ_API_KEY}",
+                "Content-Type": "application/json",
+                "User-Agent": "ReelsMob/1.0"
+            }
+        )
 
-    logger.warning(f"Ollama call ({model}) finished with: {last_err}")
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=15.0) as res:
+                    result = json.loads(res.read().decode("utf-8"))
+                    content = result["choices"][0]["message"]["content"].strip()
+                    match = re.search(r"\{.*\}", content, re.DOTALL)
+                    if match:
+                        content = match.group(0)
+                    return json.loads(content)
+            except Exception as e:
+                logger.warning(f"Groq agent call attempt {attempt+1} failed: {e}")
+
+    # 2. Fallback: Google Gemini API
+    if GEMINI_API_KEY:
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}"
+        combined_prompt = f"{system_prompt}\n\n{user_prompt}\n\nReturn ONLY valid JSON matching schema."
+        payload = json.dumps({
+            "contents": [{"parts": [{"text": combined_prompt}]}],
+            "generationConfig": {
+                "responseMimeType": "application/json",
+                "temperature": temperature
+            }
+        }).encode("utf-8")
+        req = urllib.request.Request(url, data=payload, headers={"Content-Type": "application/json"})
+
+        for attempt in range(max_retries):
+            try:
+                with urllib.request.urlopen(req, timeout=20.0) as res:
+                    data = json.loads(res.read().decode("utf-8"))
+                    raw = data["candidates"][0]["content"]["parts"][0]["text"].strip()
+                    match = re.search(r"\{.*\}", raw, re.DOTALL)
+                    if match:
+                        raw = match.group(0)
+                    return json.loads(raw)
+            except Exception as e:
+                logger.warning(f"Gemini fallback agent call attempt {attempt+1} failed: {e}")
+
+    logger.warning("Cloud LLM call finished: no response returned or API keys unconfigured.")
     return {}
+
+# Backward-compatibility alias so callers importing call_ollama continue without change
+call_ollama = call_cloud_llm

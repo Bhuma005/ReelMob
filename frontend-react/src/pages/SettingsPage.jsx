@@ -159,24 +159,24 @@ export default function SettingsPage() {
             </div>
           </div>
 
-          {/* Local Ollama Status */}
+          {/* Cloud AI Engine Status */}
           <div className="p-3.5 rounded-lg bg-surface-elevated/40 border border-border/70 flex items-center justify-between text-xs">
             <div className="flex items-center gap-2.5">
               <Terminal className="w-4 h-4 text-text-muted" />
               <div>
-                <span className="font-semibold text-text">Local Ollama Fallback Engine</span>
+                <span className="font-semibold text-text">Cloud AI Synthesis Engine</span>
                 <p className="text-[11px] text-text-muted">
-                  {health?.services?.ollama?.message || "Running local qwen2.5:7b when cloud is offline"}
+                  {health?.services?.cloud_ai?.message || health?.services?.ollama?.message || "Gemini 3.6 Flash vision + Groq compound-mini metadata"}
                 </p>
               </div>
             </div>
             <span className={cn(
               "text-[10px] font-mono px-2 py-0.5 rounded-full border font-semibold",
-              health?.services?.ollama?.status === 'ok' 
+              (health?.services?.cloud_ai?.status === 'ok' || health?.services?.ollama?.status === 'ok')
                 ? "bg-success/15 text-success border-success/25" 
                 : "bg-surface-elevated text-text-muted border-border"
             )}>
-              {health?.services?.ollama?.status === 'ok' ? 'ONLINE' : 'STANDBY'}
+              {(health?.services?.cloud_ai?.status === 'ok' || health?.services?.ollama?.status === 'ok') ? 'ONLINE' : 'STANDBY'}
             </span>
           </div>
         </CardContent>

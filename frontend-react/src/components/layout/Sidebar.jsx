@@ -118,9 +118,9 @@ function SystemStatus() {
       </div>
 
       <div className="flex items-center justify-between text-[11px] font-mono">
-        <span className="text-text-muted">Local AI</span>
-        <span className={getStatusColor(services.ollama?.status, false)}>
-          {services.ollama?.status === 'ok' ? 'Online' : 'Fallback'}
+        <span className="text-text-muted">Cloud AI</span>
+        <span className={getStatusColor(services.cloud_ai?.status || services.ollama?.status, false)}>
+          {(services.cloud_ai?.status === 'ok' || services.ollama?.status === 'ok') ? 'Online' : 'Fallback'}
         </span>
       </div>
 
