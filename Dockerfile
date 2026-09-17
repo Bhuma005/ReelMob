@@ -38,7 +38,6 @@ COPY --chown=user:user --from=frontend-builder /app/frontend-react/dist ./fronte
 # Copy backend and cloud source code
 COPY --chown=user:user backend/ ./backend/
 COPY --chown=user:user cloud/ ./cloud/
-COPY --chown=user:user .env* ./
 
 # Create downloads folder with write permissions
 RUN mkdir -p downloads && chmod 777 downloads

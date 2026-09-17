@@ -10,6 +10,8 @@ pinned: false
 
 # ReelsMob — AI Video Analysis & YouTube Shorts Publisher
 
+[![CI](https://github.com/Bhuma005/ReelMob/actions/workflows/ci.yml/badge.svg)](https://github.com/Bhuma005/ReelMob/actions/workflows/ci.yml)
+
 Automated Instagram Reels to YouTube Shorts studio powered by:
 - **Google Gemini 3.6 Flash**: Deep video & scene understanding
 - **Groq Cloud**: Sub-second viral metadata generation
@@ -26,11 +28,16 @@ Automated Instagram Reels to YouTube Shorts studio powered by:
    git remote add space https://huggingface.co/spaces/YOUR_USERNAME/reelsmob
    git push space main
    ```
-6. In **Settings** → **Variables and secrets**, add:
-   - `GEMINI_API_KEY`: Your Google AI Studio key
-   - `GROQ_API_KEY`: Your Groq key
-   - `SUPABASE_URL`: Your Supabase database URL
-   - `SUPABASE_SERVICE_KEY`: Your Supabase service key
+6. In **Settings** → **Variables and secrets**, add each required variable from `.env.example` as a Space **Repository secret** (or Environment variable):
+   - `ENVIRONMENT`: `production`
+   - `CORS_ORIGINS`: `https://YOUR_USERNAME-reelsmob.hf.space`
+   - `PUBLIC_BASE_URL`: `https://YOUR_USERNAME-reelsmob.hf.space`
+   - `SUPABASE_URL`: Your Supabase project URL
+   - `SUPABASE_KEY` / `SUPABASE_SERVICE_KEY`: Your Supabase API key
+   - `GROQ_API_KEY`: Your Groq Cloud API key
+   - `GEMINI_API_KEY`: Your Google Gemini API key
+
+> **Security Note**: Never commit or copy a `.env` file into the repository or container image. Secrets must always be injected at runtime via Hugging Face Space Secrets or container environment variables. `.dockerignore` prevents any local `.env` files from entering the Docker build context.
 
 Your app will be live 24/7 with a permanent HTTPS link:
 `https://YOUR_USERNAME-reelsmob.hf.space`
