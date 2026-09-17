@@ -77,15 +77,17 @@ export default function App() {
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="settings" element={<SettingsPage />} />
                 
-                {/* Dev component gallery route */}
-                <Route 
-                  path="dev/components" 
-                  element={
-                    <Suspense fallback={<div className="p-8 text-center text-xs text-text-muted">Loading Dev Gallery...</div>}>
-                      <ComponentGallery />
-                    </Suspense>
-                  } 
-                />
+                {/* Dev component gallery route (development only) */}
+                {import.meta.env.DEV && (
+                  <Route 
+                    path="dev/components" 
+                    element={
+                      <Suspense fallback={<div className="p-8 text-center text-xs text-text-muted">Loading Dev Gallery...</div>}>
+                        <ComponentGallery />
+                      </Suspense>
+                    } 
+                  />
+                )}
 
                 <Route path="*" element={<Navigate to="/" replace />} />
               </Route>

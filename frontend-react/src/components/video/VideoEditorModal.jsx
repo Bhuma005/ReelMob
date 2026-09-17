@@ -45,6 +45,29 @@ export function VideoEditorModal({
 
   const [framing, setFraming] = useState('original');
   const [isProcessing, setIsProcessing] = useState(false);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [processingStep, setProcessingStep] = useState('Initializing video editor...');
+
+  useEffect(() => {
+    let interval = null;
+    let stepTimer = null;
+    if (isProcessing) {
+      setElapsedSeconds(0);
+      setProcessingStep('Configuring FFmpeg filters...');
+      stepTimer = setTimeout(() => {
+        setProcessingStep('Rendering frames and encoding output...');
+      }, 3000);
+      interval = setInterval(() => {
+        setElapsedSeconds((s) => s + 1);
+      }, 1000);
+    } else {
+      setElapsedSeconds(0);
+    }
+    return () => {
+      if (interval) clearInterval(interval);
+      if (stepTimer) clearTimeout(stepTimer);
+    };
+  }, [isProcessing]);
 
   useEffect(() => {
     if (isOpen) {
@@ -227,10 +250,41 @@ export function VideoEditorModal({
         </div>
 
         {/* Modal Body */}
-        <div className="flex-1 overflow-y-auto p-6 grid grid-cols-1 lg:grid-cols-12 gap-6">
-          {/* Left Column: Video Preview & Playhead */}
-          <div className="lg:col-span-7 flex flex-col gap-4">
-            <div className="relative aspect-9/16 max-h-[460px] mx-auto bg-black rounded-xl overflow-hidden border border-border flex items-center justify-center group shadow-inner">
+        {(!videoUrl && !videoPath) ? (
+          <div className="flex-1 p-8 sm:p-16 flex flex-col items-center justify-center text-center space-y-4">
+            <div className="w-16 h-16 rounded-2xl bg-surface-elevated border border-border flex items-center justify-center text-text-muted">
+              <Scissors className="w-8 h-8 opacity-60" />
+            </div>
+            <div className="space-y-1.5 max-w-sm">
+              <h4 className="text-base font-semibold text-text">Select a video to edit</h4>
+              <p className="text-xs text-text-muted leading-relaxed">
+                No active video source loaded. Please select or import a video from your Content Library to open the studio editor.
+              </p>
+            </div>
+            <Button variant="secondary" onClick={onClose} className="cursor-pointer text-xs">
+              Browse Content Library
+            </Button>
+          </div>
+        ) : (
+          <div className="relative flex-1 overflow-y-auto p-4 sm:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 min-w-0">
+            {/* Processing Overlay with live elapsed timer */}
+            {isProcessing && (
+              <div className="absolute inset-0 bg-background/85 backdrop-blur-xs z-50 flex flex-col items-center justify-center p-6 text-center animate-in fade-in duration-200">
+                <div className="w-12 h-12 rounded-full bg-accent/15 border border-accent/30 flex items-center justify-center mb-3">
+                  <Loader2 className="w-6 h-6 animate-spin text-accent" />
+                </div>
+                <h3 className="text-sm font-semibold text-text mb-1">Rendering Video in Background</h3>
+                <p className="text-xs text-text-muted mb-3 max-w-xs">{processingStep}</p>
+                <div className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full bg-surface border border-border text-xs font-mono text-text-muted">
+                  <span>Elapsed:</span>
+                  <span className="font-semibold text-accent">{elapsedSeconds}s</span>
+                </div>
+              </div>
+            )}
+
+            {/* Left Column: Video Preview & Playhead */}
+            <div className="lg:col-span-7 flex flex-col gap-4">
+              <div className="relative aspect-9/16 max-h-[460px] mx-auto bg-black rounded-xl overflow-hidden border border-border flex items-center justify-center group shadow-inner">
               <video
                 ref={videoRef}
                 src={videoUrl}
@@ -287,10 +341,10 @@ export function VideoEditorModal({
             </div>
 
             {/* Scrubber & In/Out Setters */}
-            <div className="p-3 bg-surface-1 rounded-xl border border-border space-y-3">
-              <div className="flex items-center justify-between text-xs text-text-muted font-mono">
+            <div className="p-3 bg-surface-1 rounded-xl border border-border space-y-3 min-w-0 max-w-full overflow-hidden">
+              <div className="flex flex-wrap items-center justify-between gap-1 text-[11px] sm:text-xs text-text-muted font-mono">
                 <span>Current: {currentTime.toFixed(1)}s</span>
-                <span className="text-accent font-semibold">Trim: {trimStart.toFixed(1)}s – {trimEnd.toFixed(1)}s ({(trimEnd - trimStart).toFixed(1)}s)</span>
+                <span className="text-accent font-semibold text-center truncate">Trim: {trimStart.toFixed(1)}s – {trimEnd.toFixed(1)}s ({(trimEnd - trimStart).toFixed(1)}s)</span>
                 <span>Total: {duration.toFixed(1)}s</span>
               </div>
 
@@ -315,14 +369,14 @@ export function VideoEditorModal({
               />
 
               {/* In/Out Quick Action Buttons */}
-              <div className="flex items-center justify-between gap-2">
-                <Button variant="secondary" size="sm" onClick={setInPoint} className="text-xs h-8">
+              <div className="flex flex-wrap items-center justify-between gap-1.5 sm:gap-2">
+                <Button variant="secondary" size="sm" onClick={setInPoint} className="text-[11px] sm:text-xs h-7 sm:h-8 flex-1 sm:flex-none">
                   [ Set In ({currentTime.toFixed(1)}s)
                 </Button>
-                <Button variant="ghost" size="sm" onClick={togglePlay} className="text-xs h-8">
+                <Button variant="ghost" size="sm" onClick={togglePlay} className="text-[11px] sm:text-xs h-7 sm:h-8 px-2.5">
                   {isPlaying ? 'Pause' : 'Play'}
                 </Button>
-                <Button variant="secondary" size="sm" onClick={setOutPoint} className="text-xs h-8">
+                <Button variant="secondary" size="sm" onClick={setOutPoint} className="text-[11px] sm:text-xs h-7 sm:h-8 flex-1 sm:flex-none">
                   Set Out ({currentTime.toFixed(1)}s) ]
                 </Button>
               </div>
@@ -677,6 +731,7 @@ export function VideoEditorModal({
             </div>
           </div>
         </div>
+        )}
       </div>
     </div>
   );

@@ -51,11 +51,15 @@ export default function CreateReelPage() {
   // AI Multi-Clip Highlight Detection state
   const [highlightClips, setHighlightClips] = useState([]);
   const [isDetectingHighlights, setIsDetectingHighlights] = useState(false);
+  const [highlightElapsed, setHighlightElapsed] = useState(0);
+  const [highlightStep, setHighlightStep] = useState('');
   const highlightPollRef = useRef(null);
+  const highlightTimerRef = useRef(null);
 
   const pollTimerRef = useRef(null);
   const stopwatchRef = useRef(null);
   const moderationPollRef = useRef(null);
+  const moderationTimerRef = useRef(null);
 
   const {
     register,
@@ -85,18 +89,59 @@ export default function CreateReelPage() {
       clearInterval(highlightPollRef.current);
       highlightPollRef.current = null;
     }
+    if (highlightTimerRef.current) {
+      clearInterval(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
     if (moderationPollRef.current) {
       clearInterval(moderationPollRef.current);
       moderationPollRef.current = null;
     }
+    if (moderationTimerRef.current) {
+      clearInterval(moderationTimerRef.current);
+      moderationTimerRef.current = null;
+    }
+  };
+
+  const cancelHighlightDetection = () => {
+    if (highlightPollRef.current) {
+      clearInterval(highlightPollRef.current);
+      highlightPollRef.current = null;
+    }
+    if (highlightTimerRef.current) {
+      clearInterval(highlightTimerRef.current);
+      highlightTimerRef.current = null;
+    }
+    setIsDetectingHighlights(false);
+    toast.info("Highlight analysis cancelled");
   };
 
   const triggerHighlightDetection = async () => {
     setIsDetectingHighlights(true);
+    setHighlightElapsed(0);
+    setHighlightStep("Extracting keyframes & scene boundaries...");
+    if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
+    highlightTimerRef.current = setInterval(() => {
+      setHighlightElapsed(prev => {
+        const next = prev + 1;
+        if (next < 6) {
+          setHighlightStep("Extracting keyframes & scene boundaries...");
+        } else if (next < 16) {
+          setHighlightStep("Scanning motion vectors & visual hooks...");
+        } else if (next < 30) {
+          setHighlightStep("Analyzing audio speech energy & engagement...");
+        } else {
+          setHighlightStep("Scoring and compiling top viral moments...");
+        }
+        return next;
+      });
+    }, 1000);
+
     try {
       const res = await videosApi.getHighlights(store.metadata?.video_path || '', store.url);
       if (!res?.job_id) {
         toast.error("Failed to start highlight detection");
+        if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
         setIsDetectingHighlights(false);
         return;
       }
@@ -109,6 +154,7 @@ export default function CreateReelPage() {
         polls++;
         if (polls > 60) {
           if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+          if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
           setIsDetectingHighlights(false);
           toast.error("Highlight analysis timed out");
           return;
@@ -118,11 +164,13 @@ export default function CreateReelPage() {
           const statusRes = await videosApi.getHighlightStatus(jobId);
           if (statusRes.status === 'COMPLETED') {
             if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+            if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
             setIsDetectingHighlights(false);
             setHighlightClips(statusRes.highlights || []);
             toast.success(`Found ${statusRes.highlights?.length || 0} candidate highlights!`);
           } else if (statusRes.status === 'FAILED') {
             if (highlightPollRef.current) clearInterval(highlightPollRef.current);
+            if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
             setIsDetectingHighlights(false);
             toast.error(statusRes.error || "Highlight detection failed");
           }
@@ -131,6 +179,7 @@ export default function CreateReelPage() {
         }
       }, 1500);
     } catch (err) {
+      if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
       setIsDetectingHighlights(false);
       toast.error(err.message || "Failed to analyze highlights");
     }
@@ -167,15 +216,21 @@ export default function CreateReelPage() {
   const [moderationResult, setModerationResult] = useState(null);
   const [isDismissedModeration, setIsDismissedModeration] = useState(false);
   const [isModerating, setIsModerating] = useState(false);
+  const [moderationElapsed, setModerationElapsed] = useState(0);
 
   const checkModeration = async (videoPathOverride) => {
     const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
     if (!pathToUse) return;
     if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+    if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
     setIsModerating(true);
+    setModerationElapsed(0);
+    moderationTimerRef.current = setInterval(() => setModerationElapsed(s => s + 1), 1000);
+
     try {
       const initRes = await videosApi.checkModeration(pathToUse, store.url);
       if (!initRes || !initRes.job_id) {
+        if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
         setIsModerating(false);
         return;
       }
@@ -185,6 +240,7 @@ export default function CreateReelPage() {
         polls++;
         if (polls > 40) {
           if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+          if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
           setIsModerating(false);
           return;
         }
@@ -192,6 +248,7 @@ export default function CreateReelPage() {
           const statusRes = await videosApi.getModerationStatus(jobId);
           if (statusRes?.status === 'COMPLETED') {
             if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+            if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
             setIsModerating(false);
             if (statusRes.result?.watermark_detected) {
               setModerationResult(statusRes.result);
@@ -201,6 +258,7 @@ export default function CreateReelPage() {
             }
           } else if (statusRes?.status === 'FAILED') {
             if (moderationPollRef.current) clearInterval(moderationPollRef.current);
+            if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
             setIsModerating(false);
           }
         } catch (pollErr) {
@@ -209,6 +267,7 @@ export default function CreateReelPage() {
       }, 1500);
     } catch (e) {
       console.debug("Moderation check skipped or errored:", e);
+      if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
       setIsModerating(false);
     }
   };
@@ -601,6 +660,14 @@ export default function CreateReelPage() {
                 </Button>
               </div>
             </motion.div>
+          )}
+
+          {/* Background Moderation Scanning Status */}
+          {isModerating && (
+            <div className="flex items-center gap-2.5 text-xs text-text-muted bg-surface-elevated/40 border border-border/50 rounded-xl p-3 shadow-sm">
+              <Loader2 className="w-4 h-4 animate-spin text-accent shrink-0" />
+              <span>Checking video for watermarks and platform branding... ({moderationElapsed}s)</span>
+            </div>
           )}
 
           {/* Non-blocking Content Moderation / Watermark Advisory Card */}
@@ -1113,7 +1180,7 @@ export default function CreateReelPage() {
                 {isDetectingHighlights ? (
                   <>
                     <Loader2 className="w-3.5 h-3.5 animate-spin text-accent" />
-                    <span>Analyzing Scenes...</span>
+                    <span>Analyzing ({highlightElapsed}s)...</span>
                   </>
                 ) : (
                   <>
@@ -1124,7 +1191,30 @@ export default function CreateReelPage() {
               </Button>
             </CardHeader>
             <CardContent className="p-5">
-              {highlightClips.length === 0 ? (
+              {isDetectingHighlights ? (
+                <div className="p-6 rounded-lg border border-accent/30 bg-accent/5 text-center space-y-3">
+                  <div className="flex items-center justify-center gap-2 text-accent font-semibold text-sm">
+                    <Loader2 className="w-4 h-4 animate-spin" />
+                    <span>AI Highlight Detection in Progress ({highlightElapsed}s)</span>
+                  </div>
+                  <p className="text-xs text-text-muted">{highlightStep}</p>
+                  {highlightElapsed > 45 && (
+                    <p className="text-[11px] text-amber-400 bg-amber-500/10 px-3 py-1.5 rounded-md inline-block">
+                      Processing high-resolution video — this can take up to 90 seconds on larger files.
+                    </p>
+                  )}
+                  <div className="pt-2">
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      onClick={cancelHighlightDetection}
+                      className="text-xs h-7 px-3 text-text-muted hover:text-text cursor-pointer"
+                    >
+                      Cancel Analysis
+                    </Button>
+                  </div>
+                </div>
+              ) : highlightClips.length === 0 ? (
                 <div className="text-center py-6 border border-dashed border-border rounded-lg bg-surface-elevated/20">
                   <Scissors className="w-8 h-8 mx-auto text-text-muted/40 mb-2" />
                   <p className="text-xs text-text font-medium">Discover viral 15–60s candidate short clips automatically</p>
@@ -1137,11 +1227,7 @@ export default function CreateReelPage() {
                     disabled={isDetectingHighlights}
                     className="text-xs font-semibold bg-accent text-accent-foreground cursor-pointer"
                   >
-                    {isDetectingHighlights ? (
-                      <Loader2 className="w-3.5 h-3.5 animate-spin mr-1.5" />
-                    ) : (
-                      <Sparkles className="w-3.5 h-3.5 mr-1.5" />
-                    )}
+                    <Sparkles className="w-3.5 h-3.5 mr-1.5" />
                     Scan Video for Highlights
                   </Button>
                 </div>

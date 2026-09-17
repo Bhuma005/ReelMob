@@ -1,4 +1,4 @@
-﻿const CACHE_NAME = 'reelsmob-shell-v1';
+const CACHE_NAME = 'reelsmob-shell-v1';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
