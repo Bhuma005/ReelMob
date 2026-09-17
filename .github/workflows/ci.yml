@@ -1,4 +1,4 @@
-﻿name: CI
+name: CI
 
 on:
   push:
@@ -67,3 +67,6 @@ jobs:
 
       - name: Build frontend
         run: npm run build
+
+      - name: Run frontend unit & component tests
+        run: npm test
