@@ -171,6 +171,7 @@ def process_video_edit(
 
     # Output encoding parameters
     cmd.extend([
+        "-threads", "2",
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "22",

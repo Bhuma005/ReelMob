@@ -46,4 +46,4 @@ RUN mkdir -p downloads && chmod 777 downloads
 EXPOSE 7860
 
 # Launch FastAPI
-CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860}
+CMD uvicorn backend.main:app --host 0.0.0.0 --port ${PORT:-7860} --workers 1

@@ -37,13 +37,20 @@ YTDL_TIMEOUT_SECONDS = float(os.getenv("YTDL_TIMEOUT_SECONDS", "45.0"))
 
 # CORS Configuration
 _raw_cors = os.getenv("CORS_ORIGINS", "").strip()
+_render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+
 if ENVIRONMENT == "production":
-    if not _raw_cors:
+    if not _raw_cors and not _render_url:
         raise RuntimeError("CORS_ORIGINS must be set in production")
-    CORS_ORIGINS: List[str] = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()]
+    origins = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()] if _raw_cors else []
+    if _render_url and _render_url not in origins:
+        origins.append(_render_url)
+    CORS_ORIGINS: List[str] = origins
 else:
     if _raw_cors:
         CORS_ORIGINS: List[str] = [origin.strip() for origin in _raw_cors.split(",") if origin.strip()]
+    elif _render_url:
+        CORS_ORIGINS = [_render_url]
     else:
         # Standard local frontend origins for dev / staging
         CORS_ORIGINS = [
