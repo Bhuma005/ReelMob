@@ -319,8 +319,30 @@ def cleanup_partial_downloads(temp_id: str):
             logger.warning(f"Failed to clean up {file}: {e}")
 
 
+def cleanup_stale_downloads(max_age_hours: int = 2):
+    """Deletes temporary video and thumbnail files older than max_age_hours to prevent container disk filling."""
+    now = time.time()
+    cutoff = now - (max_age_hours * 3600)
+    try:
+        if os.path.exists(DOWNLOAD_DIR):
+            for fname in os.listdir(DOWNLOAD_DIR):
+                if fname.startswith("."):
+                    continue
+                fpath = os.path.join(DOWNLOAD_DIR, fname)
+                if os.path.isfile(fpath) and os.path.getmtime(fpath) < cutoff:
+                    try:
+                        os.remove(fpath)
+                        logger.debug(f"Pruned stale temporary file: {fname}")
+                    except Exception as e:
+                        logger.debug(f"Could not remove stale file {fname}: {e}")
+    except Exception as e:
+        logger.warning(f"Error during stale downloads cleanup: {e}")
+
+
 @app.post("/download", summary="Download specific video format", description="Downloads the video from the provided URL using the requested format ID.")
 async def download_video(req: DownloadRequest, request: Request):
+    # Proactively prune any older temporary files to conserve container disk space
+    cleanup_stale_downloads(max_age_hours=2)
     clean_url = validate_video_url(req.url)
     clean_fmt = sanitize_filename_or_id(req.format_id)
     if not clean_fmt:
@@ -1141,7 +1163,9 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         filter_complex = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,boxblur=20:20,crop={W}:{H}[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={W}/{H}"
         cmd = [
             ffmpeg_bin,
-            "-y", "-i", temp_in,
+            "-y",
+            "-threads", "2",
+            "-i", temp_in,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",

@@ -144,3 +144,16 @@ class TestPydanticSchemas:
         # Restore development
         monkeypatch.setenv("ENVIRONMENT", "development")
         importlib.reload(backend.config)
+
+    def test_production_render_external_url_auto_detected(self, monkeypatch):
+        import importlib
+        import backend.config
+        monkeypatch.setenv("ENVIRONMENT", "production")
+        monkeypatch.delenv("CORS_ORIGINS", raising=False)
+        monkeypatch.setenv("RENDER_EXTERNAL_URL", "https://reelsmob.onrender.com/")
+        cfg = importlib.reload(backend.config)
+        assert cfg.CORS_ORIGINS == ["https://reelsmob.onrender.com"]
+        # Restore development
+        monkeypatch.setenv("ENVIRONMENT", "development")
+        monkeypatch.delenv("RENDER_EXTERNAL_URL", raising=False)
+        importlib.reload(backend.config)

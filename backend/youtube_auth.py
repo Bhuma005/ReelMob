@@ -67,6 +67,9 @@ def _fetch_channel_name(access_token: str) -> str:
     return "YouTube Channel"
 
 def _get_public_base_url() -> str:
+    render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
+    if render_url:
+        return render_url
     return os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 
 def _get_redirect_uri() -> str:

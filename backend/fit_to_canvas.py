@@ -134,6 +134,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
         
         cmd = [
             ffmpeg_path, "-y",
+            "-threads", "2",
             "-i", input_path,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
