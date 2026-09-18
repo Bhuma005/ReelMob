@@ -39,34 +39,9 @@ def find_video_file_for_request(url: str = '', raw_title: str = '', video_path: 
                 if f.startswith(code) and f.endswith('.mp4') and os.path.getsize(os.path.join(downloads_dir, f)) > 1000:
                     return os.path.join(downloads_dir, f)
 
-    # If video is not downloaded yet, auto-download it with yt_dlp so vision model has the actual footage!
-    if url and any(domain in url for domain in ['instagram.com', 'youtube.com', 'youtu.be', 'tiktok.com']):
-        try:
-            logger.info(f"Auto-downloading video for vision frame analysis: {url}")
-            import yt_dlp
-            ydl_opts = {
-                'outtmpl': os.path.join(downloads_dir, '%(id)s.%(ext)s'),
-                'format': 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best',
-                'quiet': True,
-                'no_warnings': True,
-                'noplaylist': True,
-            }
-            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-                info = ydl.extract_info(url, download=True)
-                if info:
-                    vid_id = info.get('id')
-                    expected = os.path.join(downloads_dir, f"{vid_id}.mp4")
-                    if os.path.exists(expected) and os.path.getsize(expected) > 1000:
-                        return expected
-                    for f in os.listdir(downloads_dir):
-                        if f.startswith(str(vid_id)) and f.endswith('.mp4') and os.path.getsize(os.path.join(downloads_dir, f)) > 1000:
-                            return os.path.join(downloads_dir, f)
-        except Exception as e:
-            logger.warning(f"Could not auto-download video for vision analysis: {e}")
-
     return None
 
-def extract_video_frames(video_path: str, num_frames: int = 5, max_dim: int = 512) -> List[str]:
+def extract_video_frames(video_path: str, num_frames: int = 3, max_dim: int = 384) -> List[str]:
     frames_b64: List[str] = []
     if not os.path.exists(video_path):
         return frames_b64
@@ -76,7 +51,7 @@ def extract_video_frames(video_path: str, num_frames: int = 5, max_dim: int = 51
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames > 0:
-            positions = [0.05, 0.25, 0.50, 0.75, 0.95][:num_frames]
+            positions = [0.15, 0.50, 0.85][:num_frames]
             for pos in positions:
                 frame_idx = int(total_frames * pos)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
@@ -86,7 +61,7 @@ def extract_video_frames(video_path: str, num_frames: int = 5, max_dim: int = 51
                     if max(h, w) > max_dim:
                         scale = max_dim / max(h, w)
                         frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
-                    ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+                    ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
                     if ret_enc:
                         frames_b64.append(base64.b64encode(buf).decode('utf-8'))
             cap.release()
@@ -119,6 +94,11 @@ def extract_video_frames(video_path: str, num_frames: int = 5, max_dim: int = 51
 
 def transcribe_audio_dialogue(video_path: str) -> Optional[str]:
     if not video_path or not os.path.exists(video_path):
+        return None
+
+    # Only run local whisper if explicitly enabled via environment variable.
+    # Running Whisper on cloud CPUs (e.g. Render 0.1 vCPU) causes 2-4 minute hangs and OOM crashes.
+    if not os.getenv('ENABLE_LOCAL_WHISPER', '').lower() in ('true', '1'):
         return None
 
     try:
@@ -173,7 +153,7 @@ def analyze_video_content(
         
         if progress_callback:
             progress_callback(30, 'Extracting video frames for visual analysis...')
-        frames = extract_video_frames(resolved_path, num_frames=5)
+        frames = extract_video_frames(resolved_path, num_frames=3)
         
         # 1. Cloud AI (Gemini 3.6 Flash)
         try:
@@ -204,7 +184,7 @@ def analyze_video_content(
         source_label = 'Based on video dialogue analysis'
     else:
         analysis_source = 'caption_fallback'
-        source_label = 'From caption — video analysis unavailable'
+        source_label = 'From caption context & hashtags'
 
     result = {
         'video_analyzed': vision_success or audio_success,

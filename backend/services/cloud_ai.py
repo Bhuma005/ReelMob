@@ -28,8 +28,9 @@ except Exception:
 GEMINI_API_KEY = os.getenv('GEMINI_API_KEY', '')
 GROQ_API_KEY = os.getenv('GROQ_API_KEY', '')
 
-GEMINI_MODEL = 'gemini-3.6-flash'
-GROQ_MODEL = 'groq/compound-mini'
+GEMINI_MODEL = os.getenv('GEMINI_MODEL', 'gemini-3.6-flash')
+GROQ_MODEL = os.getenv('GROQ_MODEL', 'groq/compound-mini')
+STANDARD_USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
 
 
 def is_cloud_ai_available() -> bool:
@@ -82,7 +83,7 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
 
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{GEMINI_MODEL}:generateContent?key={GEMINI_API_KEY}'
     payload = json.dumps({'contents': [{'parts': parts}]}).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json'})
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
 
     from backend.retry import sync_retry
 
@@ -129,6 +130,7 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {'responseMimeType': 'application/json'}
     }).encode('utf-8')
+    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
     from backend.retry import sync_retry
 
     def _call_gemini_meta():
@@ -199,7 +201,7 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
         headers={
             'Authorization': f'Bearer {GROQ_API_KEY}',
             'Content-Type': 'application/json',
-            'User-Agent': 'ReelsMob/1.0'
+            'User-Agent': STANDARD_USER_AGENT
         }
     )
 

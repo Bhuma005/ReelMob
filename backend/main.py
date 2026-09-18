@@ -601,11 +601,14 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         from backend.video_analyzer import analyze_video_content
 
         job["status"] = "ANALYZING_FRAMES"
-        job["progress"] = 25
-        job["current_step"] = "Inspecting video footage & extracting key frames..."
+        job["progress"] = 35
+        if video_path and os.path.exists(video_path):
+            job["current_step"] = "Inspecting video keyframes with Gemini Flash..."
+        else:
+            job["current_step"] = "Analyzing reel caption, hashtags & engagement hooks..."
         job["started_at"] = datetime.now().isoformat()
         
-        # Run real local video frame & audio analyzer
+        # Run real video frame & caption analyzer (fast, non-blocking)
         video_analysis = await asyncio.to_thread(
             analyze_video_content,
             video_path=video_path,
@@ -618,21 +621,21 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             return
             
         job["status"] = "ANALYZING"
-        job["progress"] = 55
+        job["progress"] = 65
         if video_analysis.get("vision_success"):
-            job["current_step"] = f"Visual frames analyzed via local vision model ({video_analysis.get('vision_model_used')})..."
+            job["current_step"] = f"Visual frames analyzed via Gemini Flash ({video_analysis.get('vision_model_used')})..."
         elif video_analysis.get("audio_success"):
-            job["current_step"] = "Spoken dialogue transcribed via local Whisper..."
+            job["current_step"] = "Spoken dialogue transcribed via Whisper..."
         else:
             job["current_step"] = "Analyzing context & emotional retention hooks..."
-        await asyncio.sleep(0.4)
+        await asyncio.sleep(0.2)
         
         if job.get("status") == "CANCELLED":
             return
             
         job["status"] = "GENERATING_METADATA"
-        job["progress"] = 75
-        job["current_step"] = "Writing algorithm-grounded viral title, description & tags..."
+        job["progress"] = 80
+        job["current_step"] = "Generating viral titles, description & tags with Groq LPU..."
         
         # ── 1. Priority: ReelsMob Cloud AI (Gemini + Groq) ──────────────────────
         cloud_meta = None
