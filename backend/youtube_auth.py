@@ -18,6 +18,13 @@ from backend.retry import sync_retry
 logger = logging.getLogger("reelsmob.youtube_auth")
 
 def _load_secrets():
+    # 1. Environment variables (best for Render / Cloud deployment)
+    client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("YOUTUBE_CLIENT_ID")
+    client_secret = os.getenv("GOOGLE_CLIENT_SECRET") or os.getenv("YOUTUBE_CLIENT_SECRET")
+    if client_id and client_secret:
+        return {"client_id": client_id.strip(), "client_secret": client_secret.strip()}
+
+    # 2. Local client_secrets.json file fallback
     if not os.path.exists(CLIENT_SECRETS_FILE):
         return None
     try:
@@ -79,27 +86,32 @@ def _get_redirect_uri() -> str:
 
 @router.get("/auth/status")
 async def get_auth_status():
-    has_secrets = os.path.exists(CLIENT_SECRETS_FILE)
+    secrets = _load_secrets()
+    has_secrets = secrets is not None
     creds = _load_credentials()
     is_authenticated = creds is not None and "access_token" in creds
     channel_name = creds.get("channel_name", "Connected") if is_authenticated else None
     return {
         "has_client_secrets": has_secrets,
         "is_authenticated": is_authenticated,
-        "channel_name": channel_name
+        "channel_name": channel_name,
+        "redirect_uri": _get_redirect_uri()
     }
 
 @router.get("/auth/login")
 async def login_youtube():
-    if not os.path.exists(CLIENT_SECRETS_FILE):
-        return {"error": "client_secrets.json not found in the backend folder."}
+    secrets = _load_secrets()
+    redirect_uri = _get_redirect_uri()
+    if not secrets:
+        return {
+            "error": "Google OAuth credentials not configured. Set GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET in environment variables (or place client_secrets.json in backend folder).",
+            "redirect_uri": redirect_uri,
+            "has_client_secrets": False
+        }
 
     try:
-        secrets = _load_secrets()
         client_id = secrets["client_id"]
         scope = "%20".join(SCOPES)
-        redirect_uri = _get_redirect_uri()
-        # NOTE: Add your redirect_uri to Google Cloud Console Authorized redirect URIs
         auth_url = (
             f"https://accounts.google.com/o/oauth2/auth"
             f"?client_id={client_id}"
@@ -109,9 +121,9 @@ async def login_youtube():
             f"&access_type=offline"
             f"&prompt=consent"
         )
-        return {"auth_url": auth_url}
+        return {"auth_url": auth_url, "redirect_uri": redirect_uri, "has_client_secrets": True}
     except Exception as e:
-        return {"error": str(e)}
+        return {"error": str(e), "redirect_uri": redirect_uri}
 
 
 @router.get("/auth/callback")
