@@ -1,5 +1,5 @@
 import React, { useState, useRef } from 'react';
-import { X, Play, Pause, Volume2, VolumeX, Maximize, RefreshCw, Upload, Trash2, ExternalLink, CheckCircle2, AlertTriangle, Clock } from 'lucide-react';
+import { X, Play, Pause, Volume2, VolumeX, Maximize, RefreshCw, Upload, Trash2, ExternalLink, CheckCircle2, AlertTriangle, Clock, Download } from 'lucide-react';
 import { Button } from '../ui/Button';
 import { formatDistanceToNow, format } from 'date-fns';
 
@@ -14,6 +14,7 @@ export function VideoPreviewModal({
   const [isMuted, setIsMuted] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
   const [duration, setDuration] = useState(0);
+  const [videoError, setVideoError] = useState(false);
   const videoRef = useRef(null);
 
   if (!video) return null;
@@ -50,9 +51,9 @@ export function VideoPreviewModal({
 
   const handleSeek = (e) => {
     const time = parseFloat(e.target.value);
+    setCurrentTime(time);
     if (videoRef.current) {
       videoRef.current.currentTime = time;
-      setCurrentTime(time);
     }
   };
 
@@ -71,7 +72,14 @@ export function VideoPreviewModal({
     return `${m}:${s < 10 ? '0' : ''}${s}`;
   };
 
-  const videoSrc = video.storage_url || video.video_url || video.url || '';
+  const videoSrc = 
+    video.storage_url || 
+    video.public_url || 
+    video.video_url || 
+    video.url || 
+    video.signed_url || 
+    (video.id ? `/api/dashboard/videos/${video.id}/stream` : '') || 
+    '';
 
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
@@ -82,7 +90,7 @@ export function VideoPreviewModal({
       >
         {/* Left Side: Video Preview Player */}
         <div className="flex-1 bg-black flex flex-col items-center justify-center relative min-h-[320px] md:min-h-[500px]">
-          {videoSrc ? (
+          {videoSrc && !videoError ? (
             <div className="relative w-full h-full flex items-center justify-center group">
               <video
                 ref={videoRef}
@@ -92,6 +100,7 @@ export function VideoPreviewModal({
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onEnded={() => setIsPlaying(false)}
+                onError={() => setVideoError(true)}
                 onClick={togglePlay}
                 playsInline
               />
@@ -140,6 +149,17 @@ export function VideoPreviewModal({
                   {isMuted ? <VolumeX className="w-4 h-4" /> : <Volume2 className="w-4 h-4" />}
                 </button>
 
+                <a
+                  href={videoSrc}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download={video.title ? `${video.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.mp4` : 'video.mp4'}
+                  className="text-white hover:text-accent transition-colors p-0.5"
+                  title="Download or open in new tab"
+                >
+                  <Download className="w-4 h-4" />
+                </a>
+
                 <button 
                   type="button" 
                   onClick={toggleFullscreen} 
@@ -162,7 +182,22 @@ export function VideoPreviewModal({
                   <Play className="w-8 h-8 opacity-40" />
                 </div>
               )}
-              <p className="text-xs text-text-muted">Direct stream preview not available. File stored in cloud bucket.</p>
+              <p className="text-xs text-text-muted">
+                {videoError 
+                  ? 'Video stream could not be loaded inline in this browser.' 
+                  : 'Direct stream preview not available. File stored in cloud bucket.'}
+              </p>
+              {videoSrc && (
+                <a
+                  href={videoSrc}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  download={video.title ? `${video.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.mp4` : 'video.mp4'}
+                  className="mt-3 inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-surface-elevated border border-border hover:border-accent text-text text-xs transition-colors"
+                >
+                  <Download className="w-3.5 h-3.5 text-accent" /> Open / Download File
+                </a>
+              )}
             </div>
           )}
         </div>
@@ -263,6 +298,19 @@ export function VideoPreviewModal({
 
           {/* Action Bar */}
           <div className="p-4 border-t border-border bg-surface-elevated/40 flex flex-col gap-2">
+            {videoSrc && (
+              <a
+                href={videoSrc}
+                target="_blank"
+                rel="noopener noreferrer"
+                download={video.title ? `${video.title.replace(/[^a-zA-Z0-9_\-]/g, '_')}.mp4` : 'video.mp4'}
+                className="w-full py-2 px-3 rounded-lg border border-border bg-surface-elevated hover:bg-surface-elevated/80 text-text text-xs font-medium flex items-center justify-center gap-1.5 transition-colors cursor-pointer"
+              >
+                <Download className="w-3.5 h-3.5 text-accent" />
+                Download / Open Video
+              </a>
+            )}
+
             <div className="grid grid-cols-2 gap-2">
               {onConvert && (
                 <Button

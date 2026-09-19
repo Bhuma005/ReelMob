@@ -12,7 +12,7 @@ from typing import Optional, List, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
 import yt_dlp
 
 from backend.logging_config import setup_logging, request_id_ctx_var
@@ -1064,12 +1064,29 @@ async def get_dashboard_videos(
         total_count = res.count if getattr(res, "count", None) is not None else len(videos)
 
         for v in videos:
-            if v.get("storage_path") and v.get("status") not in ['cleaned', 'published']:
+            if v.get("storage_path") and v.get("status") != 'cleaned':
                 try:
                     signed = sb.storage.from_("reelgrab-videos").create_signed_url(v["storage_path"], 3600*24)
-                    v["public_url"] = signed.get("signedURL") or signed.get("signedUrl") or signed
+                    url = signed.get("signedURL") or signed.get("signedUrl") or signed
+                    if isinstance(url, dict):
+                        url = url.get("signedURL") or url.get("signedUrl")
+                    if url and isinstance(url, str):
+                        v["public_url"] = url
+                        v["storage_url"] = url
+                        v["video_url"] = url
                 except Exception as e:
-                    logger.error(f"Failed to generate signed url: {e}")
+                    logger.warning(f"Failed to generate signed url for video {v.get('id')}: {e}")
+                    try:
+                        pub = sb.storage.from_("reelgrab-videos").get_public_url(v["storage_path"])
+                        if pub:
+                            v["public_url"] = pub
+                            v["storage_url"] = pub
+                            v["video_url"] = pub
+                    except Exception:
+                        pass
+            if v.get("public_url"):
+                v["storage_url"] = v.get("storage_url") or v["public_url"]
+                v["video_url"] = v.get("video_url") or v["public_url"]
             v["storage_exists"] = bool(v.get("storage_path"))
 
         return {
@@ -1082,6 +1099,42 @@ async def get_dashboard_videos(
     except Exception as e:
         logger.error(f"Dashboard Videos error: {e}")
         return {"videos": [], "total": 0, "page": page, "limit": limit, "total_pages": 1, "error": str(e)}
+
+
+@app.get("/api/dashboard/videos/{video_id}/stream", summary="Stream video stream redirect", description="Redirects to playable signed or public URL for a stored video.")
+async def stream_dashboard_video(video_id: str):
+    from cloud.cloud_auth import get_supabase_client
+    clean_video_id = sanitize_filename_or_id(video_id)
+    if not clean_video_id:
+        raise HTTPException(status_code=400, detail="Invalid video_id")
+    try:
+        sb = get_supabase_client()
+        res = sb.table("video_library").select("*").eq("id", clean_video_id).limit(1).execute()
+        if not res.data:
+            raise HTTPException(status_code=404, detail="Video not found")
+        v = res.data[0]
+        storage_path = v.get("storage_path")
+        if not storage_path:
+            raise HTTPException(status_code=404, detail="Video storage path not found")
+        try:
+            signed = sb.storage.from_("reelgrab-videos").create_signed_url(storage_path, 3600*24)
+            url = signed.get("signedURL") or signed.get("signedUrl") or signed
+            if isinstance(url, dict):
+                url = url.get("signedURL") or url.get("signedUrl")
+            if url and isinstance(url, str):
+                return RedirectResponse(url=url, status_code=307)
+        except Exception as e:
+            logger.warning(f"Signed url failed for stream {clean_video_id}: {e}")
+
+        pub_url = sb.storage.from_("reelgrab-videos").get_public_url(storage_path)
+        if pub_url:
+            return RedirectResponse(url=pub_url, status_code=307)
+        raise HTTPException(status_code=404, detail="Video stream URL unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Stream dashboard video error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.delete("/api/dashboard/videos/{video_id}", summary="Delete a video", description="Deletes video from Supabase Storage and DB.")
