@@ -307,7 +307,11 @@ export default function CreateReelPage() {
       }
 
       if (initRes.status === 'COMPLETED' && initRes.result) {
-        store.setAiAnalysisResult(initRes.result);
+        const resData = {
+          ...initRes.result,
+          fallback_reason: initRes.result.fallback_reason || initRes.fallback_reason || null
+        };
+        store.setAiAnalysisResult(resData);
         stopPolling();
         if (initRes.cached) {
           toast.success("⚡ Instant AI optimization loaded from cache!");
@@ -341,7 +345,11 @@ export default function CreateReelPage() {
 
           if (statusRes.status === 'COMPLETED' && statusRes.result) {
             stopPolling();
-            store.setAiAnalysisResult(statusRes.result);
+            const resData = {
+              ...statusRes.result,
+              fallback_reason: statusRes.result.fallback_reason || statusRes.fallback_reason || null
+            };
+            store.setAiAnalysisResult(resData);
             toast.success("✨ AI Content Optimization complete!");
           } else if (statusRes.status === 'FAILED') {
             stopPolling();
@@ -802,6 +810,46 @@ export default function CreateReelPage() {
                 <CardContent className="p-5 space-y-5">
                   {store.aiAnalysisResult ? (
                     <>
+                      {/* Diagnostics & Fallback Reason Banner */}
+                      {(store.aiAnalysisResult.fallback_reason || 
+                        store.aiAnalysisResult.raw_result?.fallback_reason || 
+                        store.aiAnalysisResult.confidence_notes === 'FALLBACK' || 
+                        store.aiAnalysisResult.ai_failed) && (
+                        <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs flex items-start gap-2.5 text-amber-200">
+                          <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
+                          <div className="space-y-1">
+                            <div className="flex items-center gap-2">
+                              <span className="font-semibold font-mono text-[11px] uppercase tracking-wider text-amber-400">
+                                Fallback Metadata Active
+                              </span>
+                              <span className="text-[10px] px-1.5 py-0.5 rounded bg-amber-500/20 text-amber-300 font-mono">
+                                {store.aiAnalysisResult.source_label || store.aiAnalysisResult.raw_result?.source_label || "Caption Fallback"}
+                              </span>
+                            </div>
+                            <p className="text-text-muted text-[11px] leading-relaxed">
+                              {store.aiAnalysisResult.fallback_reason || 
+                               store.aiAnalysisResult.raw_result?.fallback_reason || 
+                               "AI models were unavailable; generated from original caption text and tags."}
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {/* Source / Model indicator when real analysis succeeded */}
+                      {!store.aiAnalysisResult.ai_failed && store.aiAnalysisResult.confidence_notes !== 'FALLBACK' && (
+                        <div className="flex items-center justify-between text-[11px] font-mono text-text-muted px-1">
+                          <span className="flex items-center gap-1.5 text-success">
+                            <CheckCircle2 className="w-3.5 h-3.5" />
+                            {store.aiAnalysisResult.source_label || store.aiAnalysisResult.raw_result?.source_label || "Video AI Analyzed"}
+                          </span>
+                          {store.aiAnalysisResult.confidence_notes && (
+                            <span className="text-accent/80">
+                              Confidence: {store.aiAnalysisResult.confidence_notes}
+                            </span>
+                          )}
+                        </div>
+                      )}
+
                       {/* Proposed Viral Title */}
                       <div className="space-y-1.5 bg-accent/5 p-4 rounded-lg border border-accent/20">
                         <div className="flex justify-between items-center pb-1">
