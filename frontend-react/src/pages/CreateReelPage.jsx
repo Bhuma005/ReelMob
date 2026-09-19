@@ -483,18 +483,22 @@ export default function CreateReelPage() {
     setIsAutomating(true);
     try {
       const payload = {
-        title: store.aiAnalysisResult?.viral_title || store.metadata.title || 'Untitled',
-        description: store.aiAnalysisResult?.optimized_description || store.metadata.description || '',
+        title: store.aiAnalysisResult?.viral_title || store.metadata?.title || 'Untitled',
+        description: store.aiAnalysisResult?.optimized_description || store.metadata?.description || '',
         hashtags: store.allHashtags || [],
-        thumbnail_url: store.metadata.thumbnail_url || '',
+        thumbnail_url: store.metadata?.thumbnail_url || '',
         url: store.url,
+        format_id: store.activeFormatId || null,
         opus_mode: store.isOpusMode,
         iso_schedule: store.aiAnalysisResult?.raw_result?.posting_recommendation?.iso_time || store.aiAnalysisResult?.iso_schedule || null,
         scheduled_time_human: store.aiAnalysisResult?.scheduled_time || null
       };
       
       const res = await automationApi.triggerAutomation(payload);
-      setAutomationResult(res.automation_details);
+      if (res && res.status === 'error') {
+        throw new Error(res.message || 'Automation failed');
+      }
+      setAutomationResult(res.automation_details || res);
       toast.success("Scheduled successfully to Cloud!");
     } catch (err) {
       toast.error(err.message || "Automation failed");

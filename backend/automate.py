@@ -3,7 +3,7 @@ automate.py  —  YouTube Shorts Automation endpoint.
 Delegates AI generation to the professional ai_pipeline module.
 """
 
-from fastapi import APIRouter, BackgroundTasks
+from fastapi import APIRouter, BackgroundTasks, HTTPException
 from pydantic import BaseModel
 from typing import List, Optional
 import os
@@ -33,6 +33,7 @@ class AutomateRequest(BaseModel):
     hashtags: List[str] = []
     thumbnail_url: Optional[str] = None
     url: str
+    format_id: Optional[str] = None
     opus_mode: Optional[bool] = False
 
     @field_validator('url')
@@ -113,30 +114,62 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
     temp_filepath = str(downloads_dir / f"auto_{temp_id}.mp4")
 
     logger.info(f"⬇️ Downloading video to temporary file: {temp_filepath}...")
+    format_selector = req.format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
     ydl_opts = {
-        'format': 'best',
+        'format': format_selector,
         'outtmpl': temp_filepath,
-        'quiet': True,
+        'quiet': False,
         'no_warnings': True,
+        'socket_timeout': 30,
+        'extractor_args': {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web']
+            }
+        },
+        'http_headers': {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'nocheckcertificate': True,
     }
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             await asyncio.to_thread(ydl.download, [req.url])
     except Exception as e:
-        logger.error(f"Download failed: {e}")
-        return {"status": "error", "message": f"Download failed: {str(e)}"}
+        logger.warning(f"Primary format download failed: {e}. Trying secondary format fallback...")
+        try:
+            fallback_opts = {
+                'format': 'best',
+                'outtmpl': temp_filepath,
+                'quiet': True,
+                'no_warnings': True,
+                'socket_timeout': 30,
+                'nocheckcertificate': True,
+            }
+            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                await asyncio.to_thread(ydl.download, [req.url])
+        except Exception as e2:
+            logger.error(f"Download failed completely: {e2}")
+            if os.path.exists(temp_filepath):
+                os.remove(temp_filepath)
+            raise HTTPException(status_code=400, detail=f"Download failed: {str(e2)}")
+
+    if not os.path.exists(temp_filepath) or os.path.getsize(temp_filepath) == 0:
+        raise HTTPException(status_code=400, detail="Downloaded video file is missing or empty.")
 
     # Apply Auto-Detect & Fit-to-Canvas (Master Requirement)
+    fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
     try:
-        fitted_filepath = f"downloads/{uuid.uuid4().hex}_fitted.mp4"
         logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
         await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
-        if os.path.exists(temp_filepath): 
-            os.remove(temp_filepath)
-        temp_filepath = fitted_filepath
+        if os.path.exists(fitted_filepath) and os.path.getsize(fitted_filepath) > 0:
+            if os.path.exists(temp_filepath): 
+                os.remove(temp_filepath)
+            temp_filepath = fitted_filepath
     except Exception as e:
         logger.error(f"Fit-to-canvas failed: {e}")
-        # non-fatal fallback
+        # non-fatal fallback: use temp_filepath as-is
 
     # 3. Enqueue directly to the Supabase Cloud Storage + Database
     logger.info(f"⬆️ Sending securely to Supabase Cloud...")
@@ -153,15 +186,17 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
         logger.info(f"✅ Video enqueued in cloud with DB ID: {new_id}")
     except Exception as e:
         logger.error(f"Cloud Upload failed: {e}")
-        # Ensure we delete the file if cloud upload fails
         if os.path.exists(temp_filepath):
             os.remove(temp_filepath)
-        return {"status": "error", "message": f"Cloud Upload failed: {str(e)}"}
+        raise HTTPException(status_code=500, detail=f"Cloud Upload failed: {str(e)}")
 
     # 4. Clean up the local hard drive!
     if os.path.exists(temp_filepath):
         logger.info("🧹 Cleaning up local temporary video file...")
-        os.remove(temp_filepath)
+        try:
+            os.remove(temp_filepath)
+        except Exception:
+            pass
 
     return {
         "status": "success",
