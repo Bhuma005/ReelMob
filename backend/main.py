@@ -642,8 +642,14 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         
         # ── 1. Priority: ReelsMob Cloud AI (Gemini + Groq) ──────────────────────
         cloud_meta = None
+        fallback_reason: Optional[str] = None
         try:
-            from backend.services.cloud_ai import is_cloud_ai_available, generate_metadata_with_groq
+            from backend.services.cloud_ai import (
+                is_cloud_ai_available,
+                generate_metadata_with_groq,
+                get_gemini_api_key,
+                get_groq_api_key
+            )
             if is_cloud_ai_available():
                 logger.info("⚡ Using ReelsMob Cloud AI (Groq + Gemini) for instant metadata generation...")
                 cloud_meta = await asyncio.to_thread(
@@ -651,8 +657,20 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                     visual_summary=video_analysis.get("visual_description", "") or description or title,
                     caption=description
                 )
+                if not cloud_meta or not cloud_meta.get("success"):
+                    fallback_reason = (cloud_meta or {}).get("fallback_reason") or (cloud_meta or {}).get("error") or "Cloud AI metadata generation unsuccessful"
+                    logger.warning(f"Cloud AI generation unsuccessful for job {job_id}: {fallback_reason}")
+            else:
+                missing_keys = []
+                if not get_gemini_api_key():
+                    missing_keys.append("GEMINI_API_KEY")
+                if not get_groq_api_key():
+                    missing_keys.append("GROQ_API_KEY")
+                fallback_reason = f"Cloud AI unconfigured: missing {', '.join(missing_keys)}"
+                logger.warning(f"Job {job_id}: {fallback_reason}")
         except Exception as e:
-            logger.warning(f"Cloud AI metadata generation attempt error: {e}")
+            fallback_reason = f"Cloud AI metadata generation attempt error: {e}"
+            logger.warning(f"Job {job_id}: {fallback_reason}")
 
         if cloud_meta and cloud_meta.get("success"):
             best_title = cloud_meta.get("title") or title or "Must Watch Viral Scene 🔥"
@@ -663,6 +681,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             source_label = video_analysis.get("source_label") or "Based on video analysis"
             analysis_source = video_analysis.get("analysis_source") or "video_visual"
             video_analyzed = video_analysis.get("video_analyzed", True)
+            cloud_sub_fallback = cloud_meta.get("fallback_reason")
 
             raw_result = {
                 "title": best_title,
@@ -682,7 +701,8 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "video_analyzed": video_analyzed,
                 "visual_description": video_analysis.get("visual_description", ""),
                 "audio_transcript": video_analysis.get("audio_transcript", ""),
-                "provider": "ReelsMob Cloud AI (Gemini 3.6 + Groq)"
+                "fallback_reason": cloud_sub_fallback,
+                "provider": f"ReelsMob Cloud AI ({cloud_meta.get('model', 'Groq/Gemini')})"
             }
             
             result_payload = {
@@ -690,14 +710,15 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "optimized_description": desc,
                 "youtube": youtube_tags,
                 "instagram": instagram_tags,
-                "analysis": "Generated via ReelsMob Cloud AI using Gemini 3.6 video visual inspection and Groq viral synthesis.",
+                "analysis": "Generated via ReelsMob Cloud AI using video visual inspection and viral synthesis.",
                 "confidence_notes": "VERY HIGH (Cloud AI)",
                 "scheduled_time": "07:30 PM",
                 "raw_result": raw_result,
                 "ai_failed": False,
                 "source_label": source_label,
                 "analysis_source": analysis_source,
-                "video_analyzed": video_analyzed
+                "video_analyzed": video_analyzed,
+                "fallback_reason": cloud_sub_fallback
             }
             
             job["status"] = "COMPLETED"
@@ -705,17 +726,20 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             job["current_step"] = "AI optimization complete (Cloud AI)"
             job["completed_at"] = datetime.now().isoformat()
             job["result"] = result_payload
+            job["fallback_reason"] = cloud_sub_fallback
             
             if content_hash:
-                ANALYSIS_CACHE[content_hash] = result_payload
+                AI_CACHE_STORE[content_hash] = result_payload
             return
 
         # ── 2. Cloud AI Fallback / Agent Execution ────────────────────────────
-        from backend.services.cloud_ai import GROQ_API_KEY, GEMINI_API_KEY
-        cloud_keys_present = bool(GROQ_API_KEY or GEMINI_API_KEY)
+        from backend.services.cloud_ai import get_groq_api_key, get_gemini_api_key
+        cloud_keys_present = bool(get_groq_api_key() or get_gemini_api_key())
             
         if not cloud_keys_present:
-            logger.warning(f"Cloud AI keys unconfigured for job {job_id}. Using deterministic fallback metadata.")
+            if not fallback_reason:
+                fallback_reason = "Cloud AI keys unconfigured (GEMINI_API_KEY and GROQ_API_KEY missing)"
+            logger.warning(f"Cloud AI keys unconfigured for job {job_id}. Using deterministic fallback metadata. Reason: {fallback_reason}")
             fallback_title = title or "Trending Reel"
             fallback_desc = description or "Watch this trending video! #Shorts #Viral"
             fallback_tags = ["#Shorts", "#Viral", "#Trending", "#Reel"]
@@ -734,6 +758,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 },
                 "ai_failed": True,
                 "fallback": True,
+                "fallback_reason": fallback_reason,
                 "source_label": "From caption — video analysis unavailable",
                 "analysis_source": "caption_fallback",
                 "video_analyzed": False
@@ -744,11 +769,12 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "optimized_description": fallback_desc,
                 "youtube": fallback_tags,
                 "instagram": fallback_tags,
-                "analysis": "Generated using deterministic fallback (Cloud AI keys not configured).",
+                "analysis": f"Generated using deterministic fallback ({fallback_reason}).",
                 "confidence_notes": "FALLBACK",
                 "scheduled_time": "07:30 PM",
                 "raw_result": raw_result,
                 "ai_failed": True,
+                "fallback_reason": fallback_reason,
                 "source_label": "From caption — video analysis unavailable",
                 "analysis_source": "caption_fallback",
                 "video_analyzed": False
@@ -759,6 +785,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             job["current_step"] = "AI completed with fallback metadata"
             job["completed_at"] = datetime.now().isoformat()
             job["result"] = result_payload
+            job["fallback_reason"] = fallback_reason
             return
 
         agent = MasterAgent()
@@ -780,7 +807,8 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 timeout=120.0
             )
         except Exception as e:
-            logger.warning(f"AI job {job_id} fallback due to: {e}")
+            fallback_reason = f"MasterAgent execution fallback: {e}"
+            logger.warning(f"AI job {job_id} fallback due to: {fallback_reason}")
             desc_clean = re.sub(r'#\w+', '', description or '').strip()
             desc_clean = re.split(r'Film Details:|Cast:|Director:|Release Year:|Copyright', desc_clean, flags=re.IGNORECASE)[0].strip()
             lines = [l.strip() for l in desc_clean.split('\n') if l.strip()]
@@ -799,6 +827,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                     "youtube_hashtags": guaranteed_fallback_tags,
                     "instagram_hashtags": guaranteed_fallback_tags,
                     "ai_failed": True,
+                    "fallback_reason": fallback_reason,
                     "source_label": "From caption — video analysis unavailable",
                     "analysis_source": "caption_fallback",
                     "video_analyzed": False
@@ -835,6 +864,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             "title_reason": metadata.get("title_reason", ["High viral hook potential", "Optimized search query"]),
             "posting_recommendation": posting,
             "ai_failed": ai_failed,
+            "fallback_reason": fallback_reason or metadata.get("fallback_reason"),
             "source_label": source_label,
             "analysis_source": analysis_source,
             "video_analyzed": video_analyzed,
@@ -854,6 +884,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             "scheduled_time": posting.get("human_readable_time", "07:30 PM"),
             "raw_result": raw_result,
             "ai_failed": ai_failed,
+            "fallback_reason": fallback_reason or metadata.get("fallback_reason"),
             "source_label": source_label,
             "analysis_source": analysis_source,
             "video_analyzed": video_analyzed,
@@ -865,12 +896,14 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         job["current_step"] = "AI optimization complete"
         job["completed_at"] = datetime.now().isoformat()
         job["result"] = result_payload
+        job["fallback_reason"] = fallback_reason or metadata.get("fallback_reason")
         
         if content_hash:
             AI_CACHE_STORE[content_hash] = result_payload
             
     except Exception as e:
-        logger.warning(f"AI job {job_id} error: {e}. Falling back to instant metadata.")
+        fallback_reason = f"AI job execution error: {e}"
+        logger.warning(f"AI job {job_id} error: {fallback_reason}. Falling back to instant metadata.")
         fallback_title = title or "Trending Reel"
         fallback_desc = description or "Watch this trending video! #Shorts #Viral"
         fallback_tags = backfill_hashtags([], fallback_title, fallback_desc, min_count=7)
@@ -885,7 +918,11 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             "title_reason": ["Fast fallback metadata"],
             "posting_recommendation": {"human_readable_time": "07:30 PM", "reason": "Peak evening engagement."},
             "ai_failed": True,
-            "fallback": True
+            "fallback": True,
+            "fallback_reason": fallback_reason,
+            "source_label": "From caption — video analysis unavailable",
+            "analysis_source": "caption_fallback",
+            "video_analyzed": False
         }
         
         result_payload = {
@@ -893,18 +930,23 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             "optimized_description": fallback_desc,
             "youtube": fallback_tags,
             "instagram": fallback_tags,
-            "analysis": "Instant optimized metadata.",
-            "confidence_notes": "READY",
+            "analysis": f"Instant optimized metadata ({fallback_reason}).",
+            "confidence_notes": "FALLBACK",
             "scheduled_time": "07:30 PM",
             "raw_result": raw_result,
-            "ai_failed": True
+            "ai_failed": True,
+            "fallback_reason": fallback_reason,
+            "source_label": "From caption — video analysis unavailable",
+            "analysis_source": "caption_fallback",
+            "video_analyzed": False
         }
         
         job["status"] = "COMPLETED"
         job["progress"] = 100
-        job["current_step"] = "AI optimization complete"
+        job["current_step"] = "AI optimization complete (fallback)"
         job["completed_at"] = datetime.now().isoformat()
         job["result"] = result_payload
+        job["fallback_reason"] = fallback_reason
 
 @app.post("/metadata/analyze", summary="Analyze via Local GenAI (Async Job)")
 @app.post("/api/analyze", summary="Analyze via Local GenAI (Async Job)")
@@ -928,31 +970,39 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
     content_hash = get_content_hash(req.url, req.title, req.description)
     
     # 1. Check in-memory cache
-    if content_hash in AI_CACHE_STORE:
-        logger.info(f"⚡ Returning cached AI analysis for hash {content_hash[:8]}")
+    if content_hash and content_hash in AI_CACHE_STORE:
+        logger.info(f"⚡ Returning cached AI analysis for hash: {content_hash}")
         return {
-            "job_id": f"cached_{content_hash[:8]}",
+            "job_id": f"cached_{content_hash}",
             "status": "COMPLETED",
             "progress": 100,
-            "current_step": "Retrieved from cache",
+            "current_step": "Analysis loaded from instant cache",
             "result": AI_CACHE_STORE[content_hash],
             "cached": True
         }
-
-    # 2. Create new Async Job
-    job_id = str(uuid.uuid4())
+        
+    job_id = f"ai_{uuid.uuid4().hex[:8]}"
     AI_JOBS_STORE[job_id] = {
         "job_id": job_id,
-        "content_hash": content_hash,
         "status": "QUEUED",
-        "progress": 10,
-        "current_step": "Queued for AI analysis",
+        "progress": 5,
+        "current_step": "Queued for video and context analysis...",
         "created_at": datetime.now().isoformat(),
+        "content_hash": content_hash,
         "result": None,
         "error": None
     }
     
-    background_tasks.add_task(execute_ai_analysis_job, job_id, req.title, req.description, req.url, req.video_path or "")
+    # 2. Dispatch real analysis pipeline into background thread
+    background_tasks.add_task(
+        execute_ai_analysis_job,
+        job_id=job_id,
+        url=req.url,
+        title=req.title,
+        description=req.description,
+        video_path=req.video_path,
+        content_hash=content_hash
+    )
     
     return {
         "job_id": job_id,
@@ -970,13 +1020,17 @@ async def get_ai_job_status(job_id: str):
             return {"job_id": clean_job_id, "status": "COMPLETED", "progress": 100, "current_step": "Complete", "result": None}
         raise HTTPException(status_code=404, detail="AI job not found")
 
+    res = job.get("result") or {}
+    fallback_reason = res.get("fallback_reason") if isinstance(res, dict) else None
+
     return {
         "job_id": job["job_id"],
         "status": job["status"],
         "progress": job["progress"],
         "current_step": job["current_step"],
         "result": job.get("result"),
-        "error": job.get("error")
+        "error": job.get("error"),
+        "fallback_reason": fallback_reason or job.get("fallback_reason")
     }
 
 @app.post("/api/analyze/cancel/{job_id}", summary="Cancel AI Analysis Job")

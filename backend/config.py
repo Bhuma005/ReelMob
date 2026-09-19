@@ -79,9 +79,9 @@ def _clean_supabase_url(url: str) -> str:
 
 SUPABASE_URL = _clean_supabase_url(os.getenv("SUPABASE_URL", ""))
 SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY", "").strip().strip("'\"")
-YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GROQ_API_KEY = os.getenv("GROQ_API_KEY", "")
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip().strip("'\"")
+GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_KEY") or "").strip().strip("'\"")
+GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or os.getenv("GROQ_KEY") or "").strip().strip("'\"")
 
 
 def mask_secret(secret: str, visible_chars: int = 4) -> str:
