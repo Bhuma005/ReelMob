@@ -69,7 +69,8 @@ export default function ConnectionsPage() {
   const handleYtLogin = async () => {
     setIsLoggingIn(true);
     try {
-      const res = await authApi.getLoginUrl();
+      const currentUri = `${window.location.origin}/auth/callback`;
+      const res = await authApi.getLoginUrl(currentUri);
       if (res.redirect_uri) setRedirectUri(res.redirect_uri);
       
       if (res.has_client_secrets === false || (!res.auth_url && res.error)) {

@@ -1,7 +1,7 @@
 import { fetchApi } from './client';
 
 export const authApi = {
-  getStatus: () => fetchApi('/auth/status'),
-  getLoginUrl: () => fetchApi('/auth/login'),
+  getStatus: (redirectUri) => fetchApi(`/auth/status${redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : ''}`),
+  getLoginUrl: (redirectUri) => fetchApi(`/auth/login${redirectUri ? `?redirect_uri=${encodeURIComponent(redirectUri)}` : ''}`),
   logout: () => fetchApi('/auth/logout'),
 };

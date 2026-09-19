@@ -73,39 +73,56 @@ def _fetch_channel_name(access_token: str) -> str:
         logger.warning(f"Channel name fetch error (token may be expired): {e}")
     return "YouTube Channel"
 
-def _get_public_base_url() -> str:
+def _get_public_base_url(request: Request = None) -> str:
+    env_redirect = os.getenv("GOOGLE_REDIRECT_URI") or os.getenv("REDIRECT_URI")
+    if env_redirect:
+        return env_redirect.rsplit("/auth/callback", 1)[0].rstrip("/")
+
     render_url = os.getenv("RENDER_EXTERNAL_URL", "").strip().rstrip("/")
     if render_url:
         return render_url
-    return os.getenv("PUBLIC_BASE_URL", "http://localhost:8000").rstrip("/")
 
-def _get_redirect_uri() -> str:
-    return f"{_get_public_base_url()}/auth/callback"
+    if request:
+        proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
+        host = request.headers.get("x-forwarded-host") or request.headers.get("host")
+        if host:
+            return f"{proto}://{host}".rstrip("/")
+
+    return os.getenv("PUBLIC_BASE_URL", "https://reelmob.onrender.com").rstrip("/")
+
+def _get_redirect_uri(request: Request = None, override_uri: str = None) -> str:
+    if override_uri and override_uri.startswith(("http://", "https://")):
+        return override_uri.strip()
+    env_redirect = os.getenv("GOOGLE_REDIRECT_URI") or os.getenv("REDIRECT_URI")
+    if env_redirect:
+        return env_redirect.strip()
+    return f"{_get_public_base_url(request)}/auth/callback"
 
 # ── routes ───────────────────────────────────────────────────────────────────
 
 @router.get("/auth/status")
-async def get_auth_status():
+async def get_auth_status(request: Request, redirect_uri: str = None):
     secrets = _load_secrets()
     has_secrets = secrets is not None
     creds = _load_credentials()
     is_authenticated = creds is not None and "access_token" in creds
     channel_name = creds.get("channel_name", "Connected") if is_authenticated else None
+    resolved_uri = _get_redirect_uri(request, override_uri=redirect_uri)
     return {
         "has_client_secrets": has_secrets,
         "is_authenticated": is_authenticated,
         "channel_name": channel_name,
-        "redirect_uri": _get_redirect_uri()
+        "redirect_uri": resolved_uri
     }
 
 @router.get("/auth/login")
-async def login_youtube():
+async def login_youtube(request: Request, redirect_uri: str = None):
     secrets = _load_secrets()
-    redirect_uri = _get_redirect_uri()
+    resolved_redirect_uri = _get_redirect_uri(request, override_uri=redirect_uri)
     if not secrets:
         return {
             "error": "Google OAuth credentials not configured. Set GOOGLE_CLIENT_ID & GOOGLE_CLIENT_SECRET in environment variables (or place client_secrets.json in backend folder).",
-            "redirect_uri": redirect_uri,
+            "redirect_uri": resolved_redirect_uri,
             "has_client_secrets": False
         }
 
@@ -115,15 +132,15 @@ async def login_youtube():
         auth_url = (
             f"https://accounts.google.com/o/oauth2/auth"
             f"?client_id={client_id}"
-            f"&redirect_uri={redirect_uri}"
+            f"&redirect_uri={resolved_redirect_uri}"
             f"&response_type=code"
             f"&scope={scope}"
             f"&access_type=offline"
             f"&prompt=consent"
         )
-        return {"auth_url": auth_url, "redirect_uri": redirect_uri, "has_client_secrets": True}
+        return {"auth_url": auth_url, "redirect_uri": resolved_redirect_uri, "has_client_secrets": True}
     except Exception as e:
-        return {"error": str(e), "redirect_uri": redirect_uri}
+        return {"error": str(e), "redirect_uri": resolved_redirect_uri}
 
 
 @router.get("/auth/callback")
@@ -141,7 +158,7 @@ async def auth_callback(request: Request):
         secrets = _load_secrets()
         client_id = secrets["client_id"]
         client_secret = secrets["client_secret"]
-        redirect_uri = _get_redirect_uri()
+        redirect_uri = _get_redirect_uri(request)
 
         # Exchange code for tokens
         token_data = json.dumps({
