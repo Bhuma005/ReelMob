@@ -128,6 +128,86 @@ def analyze_frames_with_vision(frames_b64: List[str], vision_model: Optional[str
         logger.warning(f"Cloud vision analysis error: {e}")
     return None
 
+def extract_frames_from_url(url: str, num_frames: int = 3, max_dim: int = 384) -> List[str]:
+    """
+    Extracts preview/thumbnail frame(s) directly from a video URL without downloading the full video.
+    This enables Gemini visual analysis even before the video is stored locally.
+    """
+    if not url:
+        return []
+
+    frames_b64: List[str] = []
+
+    try:
+        import yt_dlp
+        ydl_opts = {
+            'quiet': True,
+            'no_warnings': True,
+            'skip_download': True,
+            'extract_flat': False,
+            'socket_timeout': 10,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            info = ydl.extract_info(url, download=False)
+
+        candidate_urls: List[str] = []
+        if info:
+            thumbs = info.get('thumbnails') or []
+            if isinstance(thumbs, list):
+                for t in thumbs:
+                    if isinstance(t, dict) and t.get('url'):
+                        candidate_urls.append(t['url'])
+            if info.get('thumbnail') and info['thumbnail'] not in candidate_urls:
+                candidate_urls.insert(0, info['thumbnail'])
+
+            selected_urls = []
+            if candidate_urls:
+                if len(candidate_urls) <= num_frames:
+                    selected_urls = candidate_urls
+                else:
+                    selected_urls = [candidate_urls[-1]]
+                    if len(candidate_urls) > 2:
+                        selected_urls.append(candidate_urls[0])
+                        selected_urls.append(candidate_urls[len(candidate_urls) // 2])
+
+            for thumb_url in selected_urls[:num_frames]:
+                try:
+                    req = urllib.request.Request(
+                        thumb_url,
+                        headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                    )
+                    with urllib.request.urlopen(req, timeout=6) as resp:
+                        img_bytes = resp.read()
+                    if img_bytes and len(img_bytes) > 200:
+                        try:
+                            import cv2
+                            import numpy as np
+                            nparr = np.frombuffer(img_bytes, np.uint8)
+                            img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                            if img is not None:
+                                h, w = img.shape[:2]
+                                if max(h, w) > max_dim:
+                                    scale = max_dim / max(h, w)
+                                    img = cv2.resize(img, (int(w * scale), int(h * scale)))
+                                ret_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                                if ret_enc:
+                                    frames_b64.append(base64.b64encode(buf).decode('utf-8'))
+                                    continue
+                        except Exception:
+                            pass
+                        frames_b64.append(base64.b64encode(img_bytes).decode('utf-8'))
+                except Exception as e:
+                    logger.debug(f'Thumbnail frame download skipped for {thumb_url}: {e}')
+
+        if frames_b64:
+            logger.info(f'Extracted {len(frames_b64)} preview frame(s) from URL metadata: {url}')
+            return frames_b64
+    except Exception as e:
+        logger.debug(f'URL thumbnail extraction skipped: {e}')
+
+    return frames_b64
+
+
 def analyze_video_content(
     video_path: Optional[str] = None,
     url: str = '',
@@ -147,29 +227,41 @@ def analyze_video_content(
     audio_transcript = None
     vision_success = False
     audio_success = False
+    vision_error = None
+    frames = []
 
     if resolved_path and os.path.exists(resolved_path):
         logger.info(f'Analyzing actual video file: {resolved_path}')
-        
         if progress_callback:
             progress_callback(30, 'Extracting video frames for visual analysis...')
         frames = extract_video_frames(resolved_path, num_frames=3)
-        
-        # 1. Cloud AI (Gemini 3.6 Flash)
+    elif url:
+        logger.info(f'No local video file found; extracting preview frames from URL: {url}')
+        if progress_callback:
+            progress_callback(30, 'Extracting preview frame from video URL...')
+        frames = extract_frames_from_url(url, num_frames=3)
+
+    if frames:
+        # Cloud AI (Google Gemini Flash)
         try:
             from backend.services.cloud_ai import is_cloud_ai_available, analyze_frames_with_gemini
-            if is_cloud_ai_available() and frames:
+            if is_cloud_ai_available():
                 if progress_callback:
-                    progress_callback(45, 'Analyzing visual frames with Google Gemini 3.6 Flash...')
+                    progress_callback(45, f'Analyzing visual frames with Google Gemini ({vision_model or "Flash"})...')
                 cloud_vision = analyze_frames_with_gemini(frames, caption=raw_description)
                 if cloud_vision.get('success'):
                     visual_description = cloud_vision['visual_summary']
                     vision_success = True
-                    vision_model = 'gemini-3.6-flash'
+                    vision_model = cloud_vision.get('model') or get_installed_vision_model() or 'gemini-2.0-flash'
                     logger.info(f'Gemini Cloud Vision analysis completed: {visual_description[:100]}...')
+                else:
+                    vision_error = cloud_vision.get('error')
+                    logger.warning(f'Gemini vision unsuccessful: {vision_error}')
         except Exception as e:
+            vision_error = str(e)
             logger.warning(f'Cloud vision attempt error: {e}')
 
+    if resolved_path and os.path.exists(resolved_path):
         if progress_callback:
             progress_callback(60, 'Extracting audio and dialogue cues...')
         audio_transcript = transcribe_audio_dialogue(resolved_path)
@@ -177,8 +269,9 @@ def analyze_video_content(
             audio_success = True
 
     if vision_success:
-        analysis_source = 'video_visual'
-        source_label = 'Based on video analysis'
+        is_full_video = bool(resolved_path and os.path.exists(resolved_path))
+        analysis_source = 'video_visual' if is_full_video else 'video_preview'
+        source_label = 'Based on video analysis' if is_full_video else 'Based on video preview frame'
     elif audio_success:
         analysis_source = 'video_audio'
         source_label = 'Based on video dialogue analysis'
@@ -196,7 +289,8 @@ def analyze_video_content(
         'analysis_source': analysis_source,
         'source_label': source_label,
         'video_path': resolved_path,
-        'vision_hint': 'Configure GEMINI_API_KEY in environment to enable visual frame understanding.' if not vision_success else None
+        'vision_hint': 'Configure GEMINI_API_KEY in environment to enable visual frame understanding.' if not vision_success else None,
+        'vision_error': vision_error if not vision_success else None
     }
 
     VIDEO_ANALYSIS_CACHE[cache_key] = result
