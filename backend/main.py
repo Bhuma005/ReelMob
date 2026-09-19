@@ -8,6 +8,7 @@ import re
 import urllib.request
 import tempfile
 import shutil
+import traceback
 from typing import Optional, List, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
@@ -52,6 +53,8 @@ from backend.schemas import (
 from backend.automate import router as automate_router
 from backend.youtube_auth import router as yt_auth_router
 from backend.security_headers import SecurityHeadersMiddleware
+from backend.agents.master_agent import MasterAgent, backfill_hashtags
+from backend.agents.base import AgentState
 
 # Initialize Structured Redacting Logger
 setup_logging()
@@ -758,9 +761,6 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             job["result"] = result_payload
             return
 
-        from backend.agents.master_agent import MasterAgent, backfill_hashtags
-        from backend.agents.base import AgentState
-
         agent = MasterAgent()
         initial_state = AgentState({
             "raw_title": title or "",
@@ -1168,7 +1168,6 @@ async def delete_dashboard_video(video_id: str):
         return {"status": "success", "message": "Video deleted successfully"}
     except Exception as e:
         logger.error(f"Failed to delete video: {e}")
-        import traceback
         err = traceback.format_exc()
         logger.error(f"Convert error trace: {err}")
         return {"status": "error", "message": repr(e)}
@@ -1250,7 +1249,6 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         return {"status": "success", "message": "Converted"}
     except Exception as e:
         logger.error(f"Convert error: {e}")
-        import traceback
         err = traceback.format_exc()
         logger.error(f"Convert error trace: {err}")
         return {"status": "error", "message": repr(e)}
@@ -1806,7 +1804,6 @@ async def publish_dashboard_video(video_id: str):
                 os.remove(tmp_path)
 
     except Exception as e:
-        import traceback
         logger.error(f"Publish error: {e}")
         return {"status": "error", "message": str(e) + " - " + traceback.format_exc()[:200]}
 
@@ -1929,7 +1926,6 @@ async def health_check():
 async def health_check_detailed():
     """Returns granular latency timings and operational status for all dependencies."""
     from cloud.cloud_auth import get_supabase_client
-    import time
     from datetime import datetime, timezone
 
     t_start = time.perf_counter()

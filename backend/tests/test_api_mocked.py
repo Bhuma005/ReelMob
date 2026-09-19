@@ -190,3 +190,36 @@ class TestRateLimiter:
         idx_429 = status_codes.index(429)
         res_429 = responses[idx_429].json()
         assert "Too many requests" in res_429["detail"]
+
+
+class TestAIAnalysisFallback:
+    """Verify execute_ai_analysis_job handles early failure without UnboundLocalError."""
+
+    @pytest.mark.asyncio
+    async def test_early_failure_fallback_without_unbound_local_error(self):
+        from backend.main import execute_ai_analysis_job, AI_JOBS_STORE
+
+        job_id = "test-job-early-fail-regression"
+        AI_JOBS_STORE[job_id] = {"status": "QUEUED", "progress": 0, "current_step": "Queued"}
+
+        # Simulate early failure before agent pipeline is reached
+        with patch("backend.video_analyzer.analyze_video_content", side_effect=RuntimeError("Simulated early failure")):
+            await execute_ai_analysis_job(
+                job_id=job_id,
+                title="Early Failure Test Reel",
+                description="Testing resilience against UnboundLocalError",
+                url="https://youtube.com/shorts/sample999"
+            )
+
+        job = AI_JOBS_STORE[job_id]
+        assert job["status"] == "COMPLETED"
+        assert job["progress"] == 100
+        result = job.get("result", {})
+        assert result.get("ai_failed") is True
+        assert result.get("viral_title") == "Early Failure Test Reel"
+        # Verify backfill_hashtags was executed successfully in the outer except block
+        assert isinstance(result.get("youtube"), list)
+        assert len(result["youtube"]) >= 7
+        assert isinstance(result.get("instagram"), list)
+        assert len(result["instagram"]) >= 7
+
