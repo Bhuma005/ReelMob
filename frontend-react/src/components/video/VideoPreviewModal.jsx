@@ -84,19 +84,19 @@ export function VideoPreviewModal({
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center p-4 bg-black/80 backdrop-blur-sm animate-in fade-in duration-150">
       <div 
-        className="w-full max-w-4xl max-h-[90vh] bg-surface border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col md:flex-row"
+        className="w-full max-w-5xl max-h-[92vh] md:h-[600px] bg-surface border border-border rounded-xl shadow-2xl overflow-hidden flex flex-col md:flex-row"
         role="dialog"
         aria-modal="true"
       >
         {/* Left Side: Video Preview Player */}
-        <div className="flex-1 bg-black flex flex-col items-center justify-center relative min-h-[320px] md:min-h-[500px]">
+        <div className="flex-1 min-w-0 bg-black flex flex-col items-center justify-center relative h-72 md:h-full overflow-hidden">
           {videoSrc && !videoError ? (
-            <div className="relative w-full h-full flex items-center justify-center group">
+            <div className="relative w-full h-full flex items-center justify-center group bg-black/90 p-2 md:p-4">
               <video
                 ref={videoRef}
                 src={videoSrc}
                 poster={video.thumbnail_url}
-                className="max-h-[500px] w-auto max-w-full object-contain rounded-lg"
+                className="max-h-full max-w-full w-auto h-auto object-contain rounded-lg shadow-xl"
                 onTimeUpdate={handleTimeUpdate}
                 onLoadedMetadata={handleLoadedMetadata}
                 onEnded={() => setIsPlaying(false)}
@@ -110,15 +110,15 @@ export function VideoPreviewModal({
                 <button
                   type="button"
                   onClick={togglePlay}
-                  className="absolute p-4 rounded-full bg-black/60 text-white hover:bg-black/80 hover:scale-110 transition-all cursor-pointer"
+                  className="absolute p-4 rounded-full bg-accent/90 text-accent-foreground hover:bg-accent hover:scale-110 shadow-xl transition-all cursor-pointer z-10 flex items-center justify-center"
                   aria-label="Play Video"
                 >
-                  <Play className="w-8 h-8 fill-white translate-x-0.5" />
+                  <Play className="w-8 h-8 fill-current translate-x-0.5" />
                 </button>
               )}
 
               {/* Player Controls Bar */}
-              <div className="absolute bottom-0 inset-x-0 p-3 bg-gradient-to-t from-black/90 via-black/50 to-transparent flex items-center gap-3 opacity-0 group-hover:opacity-100 transition-opacity">
+              <div className="absolute bottom-0 inset-x-0 p-3 bg-gradient-to-t from-black/95 via-black/60 to-transparent flex items-center gap-3 z-10">
                 <button 
                   type="button" 
                   onClick={togglePlay} 
@@ -203,7 +203,7 @@ export function VideoPreviewModal({
         </div>
 
         {/* Right Side: Metadata & Actions */}
-        <div className="w-full md:w-88 flex flex-col bg-surface border-t md:border-t-0 md:border-l border-border max-h-[500px]">
+        <div className="w-full md:w-[380px] shrink-0 flex flex-col bg-surface border-t md:border-t-0 md:border-l border-border h-auto md:h-full max-h-[50vh] md:max-h-full">
           {/* Header */}
           <div className="p-4 border-b border-border flex items-center justify-between">
             <span className="text-xs font-mono font-bold uppercase tracking-wider text-text-muted">
