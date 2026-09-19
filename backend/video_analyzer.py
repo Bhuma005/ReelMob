@@ -12,11 +12,11 @@ logger = logging.getLogger(__name__)
 VIDEO_ANALYSIS_CACHE: Dict[str, dict] = {}
 
 def get_installed_vision_model() -> Optional[str]:
-    """Check if Cloud AI vision (Gemini 3.6 Flash) is configured."""
+    """Check if Cloud AI vision (Google Gemini Flash) is configured."""
     try:
-        from backend.services.cloud_ai import GEMINI_API_KEY
-        if GEMINI_API_KEY:
-            return 'gemini-3.6-flash'
+        from backend.services.cloud_ai import get_gemini_api_key, get_gemini_model
+        if get_gemini_api_key():
+            return get_gemini_model()
     except Exception as e:
         logger.debug(f'Cloud vision model check error: {e}')
     return None
@@ -115,8 +115,8 @@ def transcribe_audio_dialogue(video_path: str) -> Optional[str]:
 
     return None
 
-def analyze_frames_with_vision(frames_b64: List[str], vision_model: str = "gemini-3.6-flash") -> Optional[str]:
-    """Delegates video keyframe analysis to Gemini 3.6 Flash."""
+def analyze_frames_with_vision(frames_b64: List[str], vision_model: Optional[str] = None) -> Optional[str]:
+    """Delegates video keyframe analysis to Gemini Flash."""
     if not frames_b64:
         return None
     try:
