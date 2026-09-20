@@ -603,46 +603,77 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             
         from backend.video_analyzer import analyze_video_content
 
+        def _update_progress(pct: int, step_msg: str):
+            if job.get("status") != "CANCELLED":
+                job["progress"] = max(job.get("progress", 0), pct)
+                job["current_step"] = step_msg
+
         job["status"] = "ANALYZING_FRAMES"
-        job["progress"] = 35
+        job["progress"] = 25
         if video_path and os.path.exists(video_path):
-            job["current_step"] = "Inspecting video keyframes with Gemini Flash..."
+            job["current_step"] = "Preparing video for keyframe extraction..."
         else:
-            job["current_step"] = "Analyzing reel caption, hashtags & engagement hooks..."
+            job["current_step"] = "Analyzing reel caption, hashtags & preview frames..."
         job["started_at"] = datetime.now().isoformat()
         
-        # Run real video frame & caption analyzer (fast, non-blocking)
-        video_analysis = await asyncio.to_thread(
-            analyze_video_content,
-            video_path=video_path,
-            url=url,
-            raw_title=title,
-            raw_description=description
-        )
+        # Run real video frame & caption analyzer with fast-path timeout for 0.1 CPU
+        video_analysis_timeout_sec = float(os.getenv("VIDEO_ANALYSIS_TIMEOUT_SECONDS", "60.0"))
+        timed_out = False
+        try:
+            video_analysis = await asyncio.wait_for(
+                asyncio.to_thread(
+                    analyze_video_content,
+                    video_path=video_path,
+                    url=url,
+                    raw_title=title,
+                    raw_description=description,
+                    progress_callback=_update_progress,
+                    skip_audio=True
+                ),
+                timeout=video_analysis_timeout_sec
+            )
+        except asyncio.TimeoutError:
+            logger.warning(
+                f"Video frame analysis timed out after {video_analysis_timeout_sec}s for job {job_id}. "
+                f"Degrading gracefully to lightweight caption mode."
+            )
+            timed_out = True
+            video_analysis = {
+                "video_analyzed": False,
+                "vision_success": False,
+                "audio_success": False,
+                "visual_description": "",
+                "analysis_source": "caption_fallback",
+                "source_label": "From caption — video analysis timed out",
+                "fallback_reason": "video_analysis_timeout_lightweight_mode"
+            }
+            _update_progress(60, "Frame extraction timed out; switching to lightweight caption analysis...")
         
         if job.get("status") == "CANCELLED":
             return
             
         job["status"] = "ANALYZING"
-        job["progress"] = 65
+        job["progress"] = max(job.get("progress", 0), 65)
         if video_analysis.get("vision_success"):
             job["current_step"] = f"Visual frames analyzed via Gemini Flash ({video_analysis.get('vision_model_used')})..."
         elif video_analysis.get("audio_success"):
             job["current_step"] = "Spoken dialogue transcribed via Whisper..."
+        elif timed_out:
+            job["current_step"] = "Frame extraction timed out; synthesizing viral metadata from caption context..."
         else:
             job["current_step"] = "Analyzing context & emotional retention hooks..."
-        await asyncio.sleep(0.2)
+        await asyncio.sleep(0.1)
         
         if job.get("status") == "CANCELLED":
             return
             
         job["status"] = "GENERATING_METADATA"
-        job["progress"] = 80
+        job["progress"] = max(job.get("progress", 0), 80)
         job["current_step"] = "Generating viral titles, description & tags with Groq LPU..."
         
         # ── 1. Priority: ReelsMob Cloud AI (Gemini + Groq) ──────────────────────
         cloud_meta = None
-        fallback_reason: Optional[str] = None
+        fallback_reason: Optional[str] = "video_analysis_timeout_lightweight_mode" if timed_out else None
         try:
             from backend.services.cloud_ai import (
                 is_cloud_ai_available,
@@ -681,7 +712,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             source_label = video_analysis.get("source_label") or "Based on video analysis"
             analysis_source = video_analysis.get("analysis_source") or "video_visual"
             video_analyzed = video_analysis.get("video_analyzed", True)
-            cloud_sub_fallback = cloud_meta.get("fallback_reason")
+            cloud_sub_fallback = cloud_meta.get("fallback_reason") or (fallback_reason if timed_out else None)
 
             raw_result = {
                 "title": best_title,
@@ -690,7 +721,7 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "instagram_hashtags": instagram_tags,
                 "title_candidates": [{"title": best_title, "strategy": "Cloud AI Viral Hook", "score": 98}],
                 "viewer_appeal_score": 96,
-                "title_reason": ["Video-grounded visual hook", "High CTR algorithm match"],
+                "title_reason": ["Video-grounded visual hook" if not timed_out else "Fast-path context hook", "High CTR algorithm match"],
                 "posting_recommendation": {
                     "human_readable_time": "07:30 PM",
                     "reason": "Peak engagement slot for short-form video audience."
@@ -710,8 +741,8 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 "optimized_description": desc,
                 "youtube": youtube_tags,
                 "instagram": instagram_tags,
-                "analysis": "Generated via ReelsMob Cloud AI using video visual inspection and viral synthesis.",
-                "confidence_notes": "VERY HIGH (Cloud AI)",
+                "analysis": "Generated via ReelsMob Cloud AI using video visual inspection and viral synthesis." if not timed_out else "Generated via ReelsMob Cloud AI using lightweight caption context (video analysis timed out).",
+                "confidence_notes": "VERY HIGH (Cloud AI)" if not timed_out else "HIGH (Lightweight Cloud AI)",
                 "scheduled_time": "07:30 PM",
                 "raw_result": raw_result,
                 "ai_failed": False,

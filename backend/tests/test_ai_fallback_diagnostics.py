@@ -345,3 +345,55 @@ class TestAIPipelineDiagnosticsAndFallbackReason:
         assert status_res.status_code == 200
         data = status_res.json()
         assert data["fallback_reason"] is not None
+
+    @pytest.mark.asyncio
+    async def test_pipeline_fast_path_timeout_graceful_degradation(self, client, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test_gemini")
+        monkeypatch.setenv("GROQ_API_KEY", "test_groq")
+        # Set short timeout to trigger fast-path degradation
+        monkeypatch.setenv("VIDEO_ANALYSIS_TIMEOUT_SECONDS", "0.01")
+
+        job_id = "test-job-fast-path-timeout"
+        AI_JOBS_STORE[job_id] = {"job_id": job_id, "status": "QUEUED", "progress": 5, "current_step": "Queued", "result": None, "error": None}
+
+        # Simulate slow frame extraction
+        import time
+        def _slow_analyzer(*args, **kwargs):
+            time.sleep(0.05)
+            return {"video_analyzed": True}
+
+        mock_cloud_meta = {
+            "title": "Lightweight Fallback Hook 🔥",
+            "description": "Synthesized from caption after fast-path timeout.",
+            "youtube_hashtags": ["#Shorts", "#Viral", "#Trending"],
+            "instagram_hashtags": ["#Reels"],
+            "model": "llama-3.3-70b-versatile",
+            "success": True,
+            "fallback_reason": None
+        }
+
+        with patch("backend.video_analyzer.analyze_video_content", side_effect=_slow_analyzer):
+            with patch("backend.services.cloud_ai.is_cloud_ai_available", return_value=True):
+                with patch("backend.services.cloud_ai.generate_metadata_with_groq", return_value=mock_cloud_meta):
+                    await execute_ai_analysis_job(
+                        job_id=job_id,
+                        title="",
+                        description="Exciting dance reel in the subway",
+                        url="https://youtube.com/shorts/dance999"
+                    )
+
+        job = AI_JOBS_STORE[job_id]
+        assert job["status"] == "COMPLETED"
+        res = job["result"]
+        # In lightweight mode with Cloud AI available, title was successfully synthesized from caption
+        assert res["viral_title"] == "Lightweight Fallback Hook 🔥"
+        assert res["ai_failed"] is False
+        assert res["fallback_reason"] == "video_analysis_timeout_lightweight_mode"
+        assert "timeout" in res["confidence_notes"].lower() or "lightweight" in res["confidence_notes"].lower()
+
+        # Status endpoint confirms graceful degradation
+        status_res = client.get(f"/api/analyze/status/{job_id}")
+        assert status_res.status_code == 200
+        data = status_res.json()
+        assert data["fallback_reason"] == "video_analysis_timeout_lightweight_mode"
+
