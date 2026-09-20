@@ -41,18 +41,28 @@ def find_video_file_for_request(url: str = '', raw_title: str = '', video_path: 
 
     return None
 
-def extract_video_frames(video_path: str, num_frames: int = 3, max_dim: int = 384) -> List[str]:
+def extract_video_frames(
+    video_path: str,
+    num_frames: int = 5,
+    max_dim: int = 480,
+    progress_callback = None
+) -> List[str]:
+    """
+    Extracts 5 well-spaced keyframes downscaled to 480p using fast seek.
+    Tuned for 0.1 vCPU environments without heavy memory/cpu pressure.
+    """
     frames_b64: List[str] = []
     if not os.path.exists(video_path):
         return frames_b64
 
+    # 1. Fast OpenCV keyframe extraction
     try:
         import cv2
         cap = cv2.VideoCapture(video_path)
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         if total_frames > 0:
-            positions = [0.15, 0.50, 0.85][:num_frames]
-            for pos in positions:
+            positions = [0.08, 0.28, 0.50, 0.72, 0.92][:num_frames]
+            for i, pos in enumerate(positions):
                 frame_idx = int(total_frames * pos)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
                 ret, frame = cap.read()
@@ -60,16 +70,20 @@ def extract_video_frames(video_path: str, num_frames: int = 3, max_dim: int = 38
                     h, w = frame.shape[:2]
                     if max(h, w) > max_dim:
                         scale = max_dim / max(h, w)
-                        frame = cv2.resize(frame, (int(w * scale), int(h * scale)))
-                    ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                        frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                    ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                     if ret_enc:
                         frames_b64.append(base64.b64encode(buf).decode('utf-8'))
+                if progress_callback:
+                    pct = 30 + int(((i + 1) / len(positions)) * 20)
+                    progress_callback(pct, f'Extracting frame {i + 1} of {len(positions)}...')
             cap.release()
             if frames_b64:
                 return frames_b64
     except Exception as e:
         logger.debug(f'cv2 frame extraction skipped: {e}')
 
+    # 2. Ultrafast ffmpeg fallback with single-thread clamp
     from backend.fit_to_canvas import resolve_ffmpeg_binary
     ffmpeg_exe = resolve_ffmpeg_binary()
     if ffmpeg_exe:
@@ -77,27 +91,37 @@ def extract_video_frames(video_path: str, num_frames: int = 3, max_dim: int = 38
             import subprocess, tempfile
             with tempfile.TemporaryDirectory() as tmpdir:
                 cmd = [
-                    ffmpeg_exe, '-y', '-i', video_path,
-                    '-vf', f'fps=1,scale={max_dim}:-1',
+                    ffmpeg_exe, '-y',
+                    '-threads', '1',
+                    '-i', video_path,
+                    '-vf', f'fps=1,scale={max_dim}:-2',
                     '-vframes', str(num_frames),
+                    '-preset', 'ultrafast',
+                    '-q:v', '4',
                     os.path.join(tmpdir, 'frame_%02d.jpg')
                 ]
-                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
-                for f in sorted(os.listdir(tmpdir)):
-                    if f.endswith('.jpg'):
-                        with open(os.path.join(tmpdir, f), 'rb') as img_f:
-                            frames_b64.append(base64.b64encode(img_f.read()).decode('utf-8'))
+                subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
+                extracted_files = sorted(f for f in os.listdir(tmpdir) if f.endswith('.jpg'))
+                for i, f in enumerate(extracted_files):
+                    with open(os.path.join(tmpdir, f), 'rb') as img_f:
+                        frames_b64.append(base64.b64encode(img_f.read()).decode('utf-8'))
+                    if progress_callback:
+                        pct = 30 + int(((i + 1) / max(1, len(extracted_files))) * 20)
+                        progress_callback(pct, f'Extracting frame {i + 1} of {len(extracted_files)}...')
         except Exception as e:
             logger.debug(f'ffmpeg frame extraction skipped: {e}')
 
     return frames_b64
 
 def transcribe_audio_dialogue(video_path: str) -> Optional[str]:
+    """
+    Transcribes spoken dialogue via faster-whisper.
+    Skipped by default on Free-tier CPU (0.1 vCPU) to prevent 2-4 minute hangs and OOM crashes.
+    """
     if not video_path or not os.path.exists(video_path):
         return None
 
     # Only run local whisper if explicitly enabled via environment variable.
-    # Running Whisper on cloud CPUs (e.g. Render 0.1 vCPU) causes 2-4 minute hangs and OOM crashes.
     if not os.getenv('ENABLE_LOCAL_WHISPER', '').lower() in ('true', '1'):
         return None
 
@@ -128,7 +152,12 @@ def analyze_frames_with_vision(frames_b64: List[str], vision_model: Optional[str
         logger.warning(f"Cloud vision analysis error: {e}")
     return None
 
-def extract_frames_from_url(url: str, num_frames: int = 3, max_dim: int = 384) -> List[str]:
+def extract_frames_from_url(
+    url: str,
+    num_frames: int = 5,
+    max_dim: int = 480,
+    progress_callback = None
+) -> List[str]:
     """
     Extracts preview/thumbnail frame(s) directly from a video URL without downloading the full video.
     This enables Gemini visual analysis even before the video is stored locally.
@@ -170,7 +199,7 @@ def extract_frames_from_url(url: str, num_frames: int = 3, max_dim: int = 384) -
                         selected_urls.append(candidate_urls[0])
                         selected_urls.append(candidate_urls[len(candidate_urls) // 2])
 
-            for thumb_url in selected_urls[:num_frames]:
+            for idx, thumb_url in enumerate(selected_urls[:num_frames]):
                 try:
                     req = urllib.request.Request(
                         thumb_url,
@@ -188,14 +217,20 @@ def extract_frames_from_url(url: str, num_frames: int = 3, max_dim: int = 384) -
                                 h, w = img.shape[:2]
                                 if max(h, w) > max_dim:
                                     scale = max_dim / max(h, w)
-                                    img = cv2.resize(img, (int(w * scale), int(h * scale)))
-                                ret_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 75])
+                                    img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                                ret_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
                                 if ret_enc:
                                     frames_b64.append(base64.b64encode(buf).decode('utf-8'))
+                                    if progress_callback:
+                                        pct = 30 + int(((idx + 1) / max(1, len(selected_urls[:num_frames]))) * 20)
+                                        progress_callback(pct, f'Extracting preview frame {idx + 1} of {len(selected_urls[:num_frames])}...')
                                     continue
                         except Exception:
                             pass
                         frames_b64.append(base64.b64encode(img_bytes).decode('utf-8'))
+                        if progress_callback:
+                            pct = 30 + int(((idx + 1) / max(1, len(selected_urls[:num_frames]))) * 20)
+                            progress_callback(pct, f'Extracting preview frame {idx + 1} of {len(selected_urls[:num_frames])}...')
                 except Exception as e:
                     logger.debug(f'Thumbnail frame download skipped for {thumb_url}: {e}')
 
@@ -213,7 +248,8 @@ def analyze_video_content(
     url: str = '',
     raw_title: str = '',
     raw_description: str = '',
-    progress_callback = None
+    progress_callback = None,
+    skip_audio: bool = True
 ) -> dict:
     resolved_path = video_path or find_video_file_for_request(url, raw_title)
     cache_key = resolved_path or (url if url else raw_title)
@@ -234,12 +270,12 @@ def analyze_video_content(
         logger.info(f'Analyzing actual video file: {resolved_path}')
         if progress_callback:
             progress_callback(30, 'Extracting video frames for visual analysis...')
-        frames = extract_video_frames(resolved_path, num_frames=3)
+        frames = extract_video_frames(resolved_path, num_frames=5, max_dim=480, progress_callback=progress_callback)
     elif url:
         logger.info(f'No local video file found; extracting preview frames from URL: {url}')
         if progress_callback:
             progress_callback(30, 'Extracting preview frame from video URL...')
-        frames = extract_frames_from_url(url, num_frames=3)
+        frames = extract_frames_from_url(url, num_frames=5, max_dim=480, progress_callback=progress_callback)
 
     if frames:
         # Cloud AI (Google Gemini Flash)
@@ -247,7 +283,7 @@ def analyze_video_content(
             from backend.services.cloud_ai import is_cloud_ai_available, analyze_frames_with_gemini
             if is_cloud_ai_available():
                 if progress_callback:
-                    progress_callback(45, f'Analyzing visual frames with Google Gemini ({vision_model or "Flash"})...')
+                    progress_callback(52, f'Analyzing visual frames with Google Gemini ({vision_model or "Flash"})...')
                 cloud_vision = analyze_frames_with_gemini(frames, caption=raw_description)
                 if cloud_vision.get('success'):
                     visual_description = cloud_vision['visual_summary']
@@ -261,7 +297,8 @@ def analyze_video_content(
             vision_error = str(e)
             logger.warning(f'Cloud vision attempt error: {e}')
 
-    if resolved_path and os.path.exists(resolved_path):
+    # Only run audio transcription if explicitly requested and visual analysis did not succeed
+    if not skip_audio and not vision_success and resolved_path and os.path.exists(resolved_path):
         if progress_callback:
             progress_callback(60, 'Extracting audio and dialogue cues...')
         audio_transcript = transcribe_audio_dialogue(resolved_path)

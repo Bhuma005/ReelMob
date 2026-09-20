@@ -345,3 +345,123 @@ class TestAIPipelineDiagnosticsAndFallbackReason:
         assert status_res.status_code == 200
         data = status_res.json()
         assert data["fallback_reason"] is not None
+
+    @pytest.mark.asyncio
+    async def test_pipeline_fast_path_timeout_graceful_degradation(self, client, monkeypatch):
+        monkeypatch.setenv("GEMINI_API_KEY", "test_gemini")
+        monkeypatch.setenv("GROQ_API_KEY", "test_groq")
+        # Set short timeout to trigger fast-path degradation
+        monkeypatch.setenv("VIDEO_ANALYSIS_TIMEOUT_SECONDS", "0.01")
+
+        job_id = "test-job-fast-path-timeout"
+        AI_JOBS_STORE[job_id] = {"job_id": job_id, "status": "QUEUED", "progress": 5, "current_step": "Queued", "result": None, "error": None}
+
+        # Simulate slow frame extraction
+        import time
+        def _slow_analyzer(*args, **kwargs):
+            time.sleep(0.05)
+            return {"video_analyzed": True}
+
+        mock_cloud_meta = {
+            "title": "Lightweight Fallback Hook 🔥",
+            "description": "Synthesized from caption after fast-path timeout.",
+            "youtube_hashtags": ["#Shorts", "#Viral", "#Trending"],
+            "instagram_hashtags": ["#Reels"],
+            "model": "llama-3.3-70b-versatile",
+            "success": True,
+            "fallback_reason": None
+        }
+
+        with patch("backend.video_analyzer.analyze_video_content", side_effect=_slow_analyzer):
+            with patch("backend.services.cloud_ai.is_cloud_ai_available", return_value=True):
+                with patch("backend.services.cloud_ai.generate_metadata_with_groq", return_value=mock_cloud_meta):
+                    await execute_ai_analysis_job(
+                        job_id=job_id,
+                        title="",
+                        description="Exciting dance reel in the subway",
+                        url="https://youtube.com/shorts/dance999"
+                    )
+
+        job = AI_JOBS_STORE[job_id]
+        assert job["status"] == "COMPLETED"
+        res = job["result"]
+        # In lightweight mode with Cloud AI available, title was successfully synthesized from caption
+        assert res["viral_title"] == "Lightweight Fallback Hook 🔥"
+        assert res["ai_failed"] is False
+        assert res["fallback_reason"] == "video_analysis_timeout_lightweight_mode"
+        assert "timeout" in res["confidence_notes"].lower() or "lightweight" in res["confidence_notes"].lower()
+
+        # Status endpoint confirms graceful degradation
+        status_res = client.get(f"/api/analyze/status/{job_id}")
+        assert status_res.status_code == 200
+        data = status_res.json()
+        assert data["fallback_reason"] == "video_analysis_timeout_lightweight_mode"
+
+
+class TestViralMetadataPromptingAndFormatting:
+    """Verify high-CTR title limits, tag normalization, and few-shot prompt inclusion."""
+
+    def test_enforce_title_length_under_60_chars(self):
+        from backend.services.cloud_ai import _enforce_title_length
+
+        short_title = "He Almost Missed The Ledge 😱"
+        assert _enforce_title_length(short_title) == short_title
+
+        long_title = "This Is An Extremely Long YouTube Shorts Title That Exceeds Sixty Characters Easily And Should Be Trimmed"
+        cleaned = _enforce_title_length(long_title)
+        assert len(cleaned) <= 60
+        assert cleaned.endswith("...")
+
+        assert _enforce_title_length("") == "Wait Until You See This 🎬"
+
+    def test_format_tags_ensures_broad_tags_and_prefixes(self):
+        from backend.services.cloud_ai import _format_tags
+
+        raw_tags = ["Shorts", "parkour", "#stunt", "parkour", "danger "]
+        formatted = _format_tags(raw_tags, ["#Shorts", "#ShortsFeed", "#Viral"])
+
+        assert "#Shorts" in formatted
+        assert "#ShortsFeed" in formatted
+        assert "#Viral" in formatted
+        assert "#parkour" in formatted
+        assert "#stunt" in formatted
+        assert all(t.startswith("#") for t in formatted)
+        # Deduplication
+        assert formatted.count("#parkour") == 1
+
+    def test_groq_viral_prompt_generation_and_length_enforcement(self, monkeypatch):
+        from backend.services.cloud_ai import generate_metadata_with_groq, VIRAL_METADATA_SYSTEM_PROMPT
+
+        # Verify few-shot examples exist in prompt
+        assert "FEW-SHOT BENCHMARKS" in VIRAL_METADATA_SYSTEM_PROMPT
+        assert "CRITICAL TITLE RULES" in VIRAL_METADATA_SYSTEM_PROMPT
+        assert "STRICTLY UNDER 60 CHARACTERS" in VIRAL_METADATA_SYSTEM_PROMPT
+
+        monkeypatch.setenv("GROQ_API_KEY", "test_groq_key")
+        mock_response = {
+            "choices": [{
+                "message": {
+                    "content": json.dumps({
+                        "title": "Why Chefs Never Cut Onions Like This 🧅",
+                        "description": "5 seconds is all it took. Watch this knife skill.\n\nCould you chop this fast? Comment below 👇",
+                        "youtube_hashtags": ["Shorts", "CookingHacks", "ChefLife"],
+                        "instagram_hashtags": ["Reels", "Foodie", "ViralChef"]
+                    })
+                }
+            }]
+        }
+
+        mock_resp_obj = MagicMock()
+        mock_resp_obj.read.return_value = json.dumps(mock_response).encode("utf-8")
+        mock_resp_obj.__enter__.return_value = mock_resp_obj
+
+        with patch("urllib.request.urlopen", return_value=mock_resp_obj):
+            res = generate_metadata_with_groq("Chef chopping vegetables")
+            assert res["success"] is True
+            assert len(res["title"]) <= 60
+            assert res["title"] == "Why Chefs Never Cut Onions Like This 🧅"
+            assert "#Shorts" in res["youtube_hashtags"]
+            assert "#ShortsFeed" in res["youtube_hashtags"]
+            assert len(res["hashtags"]) >= 5
+
+

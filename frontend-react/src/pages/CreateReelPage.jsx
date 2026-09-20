@@ -1031,6 +1031,14 @@ export default function CreateReelPage() {
                         />
                       </div>
 
+                      {/* Live Active Step Badge */}
+                      {store.aiStepMessage && (
+                        <div className="flex items-center gap-2 text-[11px] font-mono text-accent bg-accent/10 px-3 py-1.5 rounded-md border border-accent/25">
+                          <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-accent" />
+                          <span className="truncate font-medium">{store.aiStepMessage}</span>
+                        </div>
+                      )}
+
                       {/* 5-Step Staged Pipeline */}
                       <div className="space-y-2 text-xs font-mono">
                         <div className="flex items-center gap-2.5">
