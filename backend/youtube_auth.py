@@ -3,21 +3,35 @@ from fastapi.responses import RedirectResponse, HTMLResponse
 import os
 import json
 import urllib.request
+import logging
+from datetime import datetime, timezone, timedelta
+from typing import Optional, Dict, Any
+
+from backend.retry import sync_retry
 
 router = APIRouter()
 
 CLIENT_SECRETS_FILE = os.path.join(os.path.dirname(__file__), "client_secrets.json")
-CREDENTIALS_FILE = os.path.join(os.path.dirname(__file__), "youtube_credentials.json")
 
-SCOPES = ["https://www.googleapis.com/auth/youtube.upload",
-          "https://www.googleapis.com/auth/youtube.readonly"]
-
-import logging
-from backend.retry import sync_retry
+SCOPES = [
+    "https://www.googleapis.com/auth/youtube.upload",
+    "https://www.googleapis.com/auth/youtube.readonly"
+]
 
 logger = logging.getLogger("reelsmob.youtube_auth")
 
-def _load_secrets():
+
+def _get_supabase_client():
+    """Returns the cached Supabase client singleton, or None if unavailable/unconfigured."""
+    try:
+        from cloud.cloud_auth import get_supabase_client
+        return get_supabase_client()
+    except Exception as e:
+        logger.warning(f"Supabase client unavailable for YouTube OAuth: {e}")
+        return None
+
+
+def _load_secrets() -> Optional[Dict[str, str]]:
     # 1. Environment variables (best for Render / Cloud deployment)
     client_id = os.getenv("GOOGLE_CLIENT_ID") or os.getenv("YOUTUBE_CLIENT_ID")
     client_secret = os.getenv("GOOGLE_CLIENT_SECRET") or os.getenv("YOUTUBE_CLIENT_SECRET")
@@ -35,22 +49,84 @@ def _load_secrets():
         logger.error(f"Failed to read client_secrets.json: {e}")
         return None
 
-def _save_credentials(token_data: dict):
-    try:
-        with open(CREDENTIALS_FILE, "w", encoding="utf-8") as f:
-            json.dump(token_data, f, indent=2)
-        logger.info("YouTube OAuth credentials saved safely")
-    except Exception as e:
-        logger.error(f"Failed to save credentials: {e}")
 
-def _load_credentials():
-    if not os.path.exists(CREDENTIALS_FILE):
-        return None
+def _save_credentials(token_data: dict):
+    """
+    Persists YouTube OAuth credentials to the 'oauth_tokens' table in Supabase.
+    Preserves existing refresh_token if new payload does not include one.
+    """
+    client = _get_supabase_client()
+    if not client:
+        logger.error("Cannot save YouTube credentials: Supabase client is unreachable or unconfigured")
+        return
+
+    expires_at = token_data.get("expires_at")
+    if not expires_at and token_data.get("expires_in"):
+        try:
+            exp = datetime.now(timezone.utc) + timedelta(seconds=int(token_data["expires_in"]))
+            expires_at = exp.isoformat()
+        except Exception:
+            expires_at = None
+
+    refresh_token = token_data.get("refresh_token")
+    if not refresh_token:
+        # Preserve existing refresh token from database if present
+        existing = _load_credentials()
+        if existing and existing.get("refresh_token"):
+            refresh_token = existing["refresh_token"]
+
+    record = {
+        "provider": "youtube",
+        "access_token": token_data.get("access_token", ""),
+        "refresh_token": refresh_token,
+        "token_type": token_data.get("token_type", "Bearer"),
+        "expires_at": expires_at,
+        "channel_name": token_data.get("channel_name"),
+        "scope": token_data.get("scope"),
+        "updated_at": datetime.now(timezone.utc).isoformat()
+    }
+
+    def _do_upsert():
+        return client.table("oauth_tokens").upsert(record, on_conflict="provider").execute()
+
     try:
-        with open(CREDENTIALS_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+        sync_retry(_do_upsert, max_retries=2, operation_name="save_youtube_oauth_token")
+        logger.info("YouTube OAuth credentials persisted to Supabase (oauth_tokens table)")
     except Exception as e:
-        logger.warning(f"Failed to parse credentials file: {e}")
+        logger.error(f"Failed to save YouTube credentials to Supabase: {e}")
+
+
+def _load_credentials() -> Optional[Dict[str, Any]]:
+    """
+    Loads YouTube OAuth credentials from the 'oauth_tokens' table in Supabase.
+    Returns None if no token row exists or if Supabase is unreachable.
+    """
+    client = _get_supabase_client()
+    if not client:
+        logger.warning("Supabase unavailable: unable to load YouTube credentials")
+        return None
+
+    def _do_select():
+        return client.table("oauth_tokens").select("*").eq("provider", "youtube").execute()
+
+    try:
+        res = sync_retry(_do_select, max_retries=2, operation_name="load_youtube_oauth_token")
+        data = getattr(res, "data", None) or []
+        if not data:
+            return None
+        row = data[0]
+        return {
+            "provider": row.get("provider", "youtube"),
+            "access_token": row.get("access_token"),
+            "refresh_token": row.get("refresh_token"),
+            "token_type": row.get("token_type", "Bearer"),
+            "expires_at": row.get("expires_at"),
+            "channel_name": row.get("channel_name"),
+            "scope": row.get("scope"),
+            "updated_at": row.get("updated_at")
+        }
+    except Exception as e:
+        logger.warning(f"Failed to load YouTube credentials from Supabase: {e}")
         return None
 
 def _fetch_channel_name(access_token: str) -> str:
@@ -214,6 +290,15 @@ async def auth_callback(request: Request):
 
 @router.get("/auth/logout")
 async def logout():
-    if os.path.exists(CREDENTIALS_FILE):
-        os.remove(CREDENTIALS_FILE)
+    client = _get_supabase_client()
+    if client:
+        try:
+            def _do_delete():
+                return client.table("oauth_tokens").delete().eq("provider", "youtube").execute()
+
+            sync_retry(_do_delete, max_retries=2, operation_name="delete_youtube_oauth_token")
+            logger.info("YouTube OAuth credentials deleted from Supabase (logged out)")
+        except Exception as e:
+            logger.warning(f"Failed to delete YouTube credentials from Supabase: {e}")
     return {"status": "logged_out"}
+
