@@ -113,8 +113,8 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
     prompt += '\nProvide a concise analysis focusing on what the viewer SEES.'
     parts.append({'text': prompt})
 
-    # Encode up to 3 frames as base64 JPEG
-    for item in frame_paths[:3]:
+    # Encode up to 5 frames as base64 JPEG
+    for item in frame_paths[:5]:
         try:
             if os.path.exists(item):
                 with open(item, 'rb') as f:
