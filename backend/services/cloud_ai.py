@@ -170,6 +170,83 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
         }
 
 
+VIRAL_METADATA_SYSTEM_PROMPT = (
+    "You are the world's top YouTube Shorts and Instagram Reels growth strategist and viral copywriter.\n"
+    "Your job is to transform raw visual video footage and caption notes into ultra-high CTR (Click-Through Rate) and high-retention metadata.\n\n"
+    "### CRITICAL TITLE RULES (YouTube Shorts & Reels):\n"
+    "1. LENGTH: STRICTLY UNDER 60 CHARACTERS. Mobile feeds truncate titles longer than 60 characters.\n"
+    "2. FIRST 3 WORDS HOOK: Place the primary curiosity or emotional hook in the first 2-4 words.\n"
+    "3. BAN GENERIC PHRASES: NEVER use filler like 'Must Watch', 'Amazing Video', 'Incredible Scene', 'Wait For It', 'Check This Out'.\n"
+    "4. TOP-PERFORMING SHORT-FORM PATTERNS:\n"
+    "   - Bold Curiosity / Unfinished Story: 'He thought nobody saw this...', 'The ending changed everything'\n"
+    "   - Question Hook: 'Why did he do this?', 'Did you notice the detail at 0:02?'\n"
+    "   - High Stakes / Tension: 'Neither driver would back down', 'He had 3 seconds to decide'\n"
+    "   - Specificity / Numbers: 'This 1 mistake cost everything', '3 seconds before disaster'\n"
+    "5. EMOJIS: Maximum 1-2 relevant emojis at the end.\n\n"
+    "### DESCRIPTION RULES (Structured 2-4 Short Sections):\n"
+    "1. LINE 1 (ABOVE-THE-FOLD HOOK): A captivating 1-sentence hook (under 120 chars) visible before the viewer clicks '...more'.\n"
+    "2. BODY (1-2 SHORT PARAGRAPHS): Synthesize the core tension, action, or context from visual footage and caption. Explain what makes this moment memorable.\n"
+    "3. CALL TO ACTION (CTA): End with an engaging question or natural CTA (e.g. 'What would you have done? Comment below 👇', 'Subscribe for daily thrilling clips 🔔').\n\n"
+    "### HASHTAG RULES:\n"
+    "1. YouTube: 7 to 15 hashtags. Dynamic mix of 2-3 broad tags (#Shorts, #ShortsFeed, #Viral) + 5-10 specific niche tags derived directly from visual and caption entities (subjects, emotion, genre).\n"
+    "2. Instagram: 12 to 22 hashtags. Mix of broad (#Reels, #ExplorePage, #ViralReels) + targeted niche tags.\n\n"
+    "### FEW-SHOT BENCHMARKS (Study these before generating):\n"
+    "Example 1 (Action / Danger):\n"
+    "- Footage: Man leaps between two tall buildings and barely catches the edge with one hand.\n"
+    "- Mediocre: 'Must Watch Amazing Rooftop Jump Scene 🔥' (Boring, generic)\n"
+    "- Viral Title: 'He Almost Missed The Ledge 😱'\n"
+    "- Description: 'One slip and it\\'s over. Watch how close this rooftop jump was to total disaster.\\n\\nWould you ever attempt something this reckless? Let us know in the comments 👇\\n\\nSubscribe for more edge-of-your-seat moments!'\n\n"
+    "Example 2 (Skills / Food / Curiosity):\n"
+    "- Footage: Street chef slices an entire bag of onions in 5 seconds using an unconventional blade angle.\n"
+    "- Mediocre: 'Incredible Chef Cutting Onion Video' (Dull description)\n"
+    "- Viral Title: 'Why Chefs Never Cut Onions Like This 🧅'\n"
+    "- Description: '5 seconds is all it took. This street food master uses a knife technique that culinary schools strictly forbid.\\n\\nHave you ever seen chopping speed like this?\\n\\nFollow for more daily street food skills!'\n\n"
+    "Example 3 (Conflict / Drama / Standoff):\n"
+    "- Footage: Two SUV drivers meet head-on on a one-lane mountain bridge and neither backs down.\n"
+    "- Mediocre: 'Crazy Car Standoff on Narrow Bridge' (Generic phrase)\n"
+    "- Viral Title: 'Neither Driver Refused To Back Up 💀'\n"
+    "- Description: 'A complete standoff 500 feet in the air. Neither driver budged an inch on this single-lane bridge pass.\\n\\nWho was in the right here? Tell us your verdict below 👇\\n\\nDrop a like if you wouldn\\'t survive this bridge!'\n\n"
+    "Return ONLY a valid JSON object matching this schema:\n"
+    "{\n"
+    "  \"title\": \"<High-CTR viral title strictly under 60 chars>\",\n"
+    "  \"description\": \"<Structured 2-4 short paragraphs with hook, scene context, and CTA>\",\n"
+    "  \"youtube_hashtags\": [\"#Shorts\", \"#ShortsFeed\", \"#Viral\", ... 5-10 niche tags],\n"
+    "  \"instagram_hashtags\": [\"#Reels\", \"#ExplorePage\", ... 10-18 niche tags]\n"
+    "}"
+)
+
+
+def _format_tags(tags: Any, default_broad: List[str]) -> List[str]:
+    """Ensures hashtags are clean, well-formed with '#', and deduplicated."""
+    if not isinstance(tags, list):
+        tags = [str(tags)]
+    cleaned: List[str] = []
+    for t in tags:
+        if not t:
+            continue
+        tag = str(t).strip().replace(" ", "").replace("\n", "")
+        if not tag.startswith("#"):
+            tag = f"#{tag}"
+        if len(tag) > 1 and tag not in cleaned:
+            cleaned.append(tag)
+    for broad in default_broad:
+        if broad not in cleaned and broad.lower() not in [c.lower() for c in cleaned]:
+            cleaned.insert(0, broad)
+    return cleaned
+
+
+def _enforce_title_length(raw_title: str) -> str:
+    """Enforces strict < 60 chars limit for YouTube Shorts / Reels titles."""
+    title = (raw_title or "").strip().strip("\"'")
+    if len(title) > 60:
+        truncated = title[:57].rsplit(" ", 1)[0] + "..."
+        if len(truncated) <= 60:
+            title = truncated
+        else:
+            title = title[:60]
+    return title or "Wait Until You See This 🎬"
+
+
 def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dict[str, Any]:
     """Fallback generator using Gemini if Groq is unavailable."""
     gemini_key = get_gemini_api_key()
@@ -179,21 +256,14 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
     gemini_model = get_gemini_model()
     url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}'
     prompt = (
-        'You are an expert YouTube Shorts and Reels growth strategist.\n'
-        'Based on this visual video footage, generate viral metadata:\n'
-        f'Visual analysis: {visual_summary}\n'
-        f'Caption context: {caption}\n\n'
-        'Return ONLY valid JSON with exactly these keys:\n'
-        '{\n'
-        '  "title": "A single punchy viral title with 1-2 relevant emojis (under 60 chars)",\n'
-        '  "description": "2-3 engaging sentences describing the scene, emotional hook, and a natural call to action",\n'
-        '  "youtube_hashtags": ["#Shorts", "#ShortsFeed", "#Viral", ... 8 to 15 relevant tags],\n'
-        '  "instagram_hashtags": ["#reels", "#viral", ... 15 to 25 relevant tags]\n'
-        '}'
+        f"{VIRAL_METADATA_SYSTEM_PROMPT}\n\n"
+        f"Visual analysis from video:\n{visual_summary}\n\n"
+        f"Caption context:\n{caption}\n\n"
+        "Generate the viral JSON metadata now."
     )
     payload = json.dumps({
         'contents': [{'parts': [{'text': prompt}]}],
-        'generationConfig': {'responseMimeType': 'application/json'}
+        'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.7}
     }).encode('utf-8')
     req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
     from backend.retry import sync_retry
@@ -213,14 +283,16 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
         data = sync_retry(_call_gemini_meta, max_retries=3, operation_name="gemini_metadata")
         raw = data['candidates'][0]['content']['parts'][0]['text']
         parsed = json.loads(raw)
-        yt_tags = parsed.get('youtube_hashtags', ['#Shorts', '#ShortsFeed', '#Viral'])
-        ig_tags = parsed.get('instagram_hashtags', ['#Reels', '#ExplorePage'])
+        title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
+        yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
+        ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
+        all_tags = list(dict.fromkeys(yt_tags + ig_tags))
         return {
-            'title': parsed.get('title', 'Must Watch Scene 🔥'),
-            'description': parsed.get('description', visual_summary[:200]),
+            'title': title,
+            'description': parsed.get('description', visual_summary[:250]),
             'youtube_hashtags': yt_tags[:15],
             'instagram_hashtags': ig_tags[:30],
-            'hashtags': list(dict.fromkeys(yt_tags + ig_tags))[:25],
+            'hashtags': all_tags[:25],
             'model': gemini_model,
             'success': True
         }
@@ -231,8 +303,8 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
 
 def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[str, Any]:
     """
-    Calls Groq to synthesize a single winning viral title,
-    compelling description, and high-CTR hashtags based on visual evidence.
+    Calls Groq to synthesize a winning high-CTR viral title,
+    structured compelling description, and dynamic hashtags based on visual evidence.
     """
     groq_key = get_groq_api_key()
     if not groq_key:
@@ -242,8 +314,8 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
             gemini_fallback['fallback_reason'] = 'groq_unconfigured_used_gemini'
             return gemini_fallback
         return {
-            'title': 'Must Watch Viral Scene 🔥',
-            'description': visual_summary[:200] if visual_summary else 'Watch this incredible scene unfold.',
+            'title': 'Wait Until You See This 🎬',
+            'description': visual_summary[:250] if visual_summary else 'Watch this incredible scene unfold.',
             'youtube_hashtags': ['#Shorts', '#ShortsFeed', '#Viral'],
             'instagram_hashtags': ['#Reels', '#ExplorePage'],
             'hashtags': ['#Shorts', '#ShortsFeed', '#Viral', '#Reels'],
@@ -253,20 +325,6 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
         }
 
     groq_model = get_groq_model()
-    system_prompt = (
-        'You are the world top YouTube Shorts and Instagram Reels growth strategist.\n'
-        'You produce viral metadata directly grounded in visual video footage.\n'
-        'Return ONLY a valid JSON object with EXACTLY these keys:\n'
-        '{\n'
-        '  "title": "A single punchy viral title with 1-2 relevant emojis (under 60 chars)",\n'
-        '  "description": "2-3 engaging sentences describing the scene, emotional hook, and a natural call to action",\n'
-        '  "youtube_hashtags": ["#Shorts", "#ShortsFeed", "#Viral", ... 8 to 15 relevant tags],\n'
-        '  "instagram_hashtags": ["#reels", "#viral", ... 15 to 25 relevant tags]\n'
-        '}\n'
-        'Rules:\n'
-        '- Base the title and hook strictly on what is happening in the visual summary.\n'
-        '- Output RAW JSON only with no markdown fences.'
-    )
 
     user_prompt = f'Visual footage analysis from Gemini:\n{visual_summary}\n\n'
     if caption:
@@ -276,12 +334,12 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
     payload = json.dumps({
         'model': groq_model,
         'messages': [
-            {'role': 'system', 'content': system_prompt},
+            {'role': 'system', 'content': VIRAL_METADATA_SYSTEM_PROMPT},
             {'role': 'user', 'content': user_prompt}
         ],
         'response_format': {'type': 'json_object'},
-        'temperature': 0.6,
-        'max_tokens': 500
+        'temperature': 0.7,
+        'max_tokens': 1000
     }).encode('utf-8')
 
     req = urllib.request.Request(
@@ -298,7 +356,7 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
 
     def _call_groq():
         try:
-            with urllib.request.urlopen(req, timeout=12) as resp:
+            with urllib.request.urlopen(req, timeout=15) as resp:
                 return json.loads(resp.read().decode('utf-8'))
         except urllib.error.HTTPError as he:
             try:
@@ -317,23 +375,14 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
             content = match.group(0)
 
         parsed = json.loads(content)
-        
-        yt_tags = parsed.get('youtube_hashtags', [])
-        if not isinstance(yt_tags, list):
-            yt_tags = [str(yt_tags)]
-        if '#Shorts' not in yt_tags and '#shorts' not in [t.lower() for t in yt_tags]:
-            yt_tags.insert(0, '#Shorts')
-            yt_tags.insert(1, '#ShortsFeed')
-
-        ig_tags = parsed.get('instagram_hashtags', [])
-        if not isinstance(ig_tags, list):
-            ig_tags = [str(ig_tags)]
-
+        title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
+        yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
+        ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
         all_tags = list(dict.fromkeys(yt_tags + ig_tags))
 
         return {
-            'title': parsed.get('title', 'Must Watch Viral Scene 🔥'),
-            'description': parsed.get('description', visual_summary[:200]),
+            'title': title,
+            'description': parsed.get('description', visual_summary[:250]),
             'youtube_hashtags': yt_tags[:15],
             'instagram_hashtags': ig_tags[:30],
             'hashtags': all_tags[:25],
@@ -351,8 +400,8 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
         fallback_tags = ['#Shorts', '#ShortsFeed', '#Viral', '#Trending', '#MovieClips', '#Cinema', '#MustWatch']
         gemini_err = gemini_fallback.get('error', 'unavailable')
         return {
-            'title': 'Unbelievable Moment Caught on Camera 🎬',
-            'description': visual_summary[:200] if visual_summary else 'Watch this incredible scene unfold.',
+            'title': 'Wait Until You See This 🎬',
+            'description': visual_summary[:250] if visual_summary else 'Watch this incredible scene unfold.',
             'youtube_hashtags': fallback_tags,
             'instagram_hashtags': fallback_tags + ['#Reels', '#ExplorePage'],
             'hashtags': fallback_tags,
