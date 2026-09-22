@@ -46,8 +46,8 @@ def get_gemini_model() -> str:
 def get_groq_model() -> str:
     """Returns valid Groq model ID, normalizing OpenRouter slugs and legacy identifiers."""
     raw = (os.getenv('GROQ_MODEL') or '').strip().strip("'\"")
-    if not raw or raw in ('groq/compound-mini', 'compound-mini', 'groq-compound'):
-        return 'llama-3.3-70b-versatile'
+    if not raw or raw in ('groq/compound-mini', 'compound-mini', 'groq-compound', 'llama-3.3-70b-versatile'):
+        return 'openai/gpt-oss-120b'
     return raw
 
 
