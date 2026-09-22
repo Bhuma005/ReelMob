@@ -93,10 +93,30 @@ def get_video_dimensions(file_path, ffprobe_path="ffprobe"):
     except:
         return None, None
 
+def get_video_codec_and_format(file_path: str, ffprobe_path: str = "ffprobe"):
+    """Use ffprobe to extract codec_name and pix_fmt of the primary video stream."""
+    cmd = [
+        ffprobe_path,
+        "-v", "error",
+        "-select_streams", "v:0",
+        "-show_entries", "stream=codec_name,pix_fmt",
+        "-of", "json",
+        file_path
+    ]
+    try:
+        result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        info = json.loads(result.stdout)
+        stream = info.get("streams", [{}])[0]
+        return stream.get("codec_name"), stream.get("pix_fmt")
+    except Exception:
+        return None, None
+
+
 def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canvas_h: int = 1920) -> str:
     """
     Guarantees the output video is strictly canvas_w x canvas_h (default 1080x1920).
     Uses a heavy blurred background fill if the aspect ratios don't match exactly.
+    Always produces a web-optimized MP4 with H.264, yuv420p, and +faststart.
     """
     ffmpeg_path, ffprobe_path = get_ff_paths()
     
@@ -110,15 +130,31 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
     
     print(f"[{os.path.basename(input_path)}] Size: {in_w}x{in_h} (Ratio: {in_ratio:.3f}) -> Target: {canvas_w}x{canvas_h} (Ratio: {target_ratio:.3f})")
 
-    # Edge Case: Near exact match, just resize without blurring to save time
+    # Edge Case: Near exact match
     if abs(in_ratio - target_ratio) < 0.02:
-        print("-> Exact or near-exact match detected. Copying directly without converting.")
-        cmd = [
-            ffmpeg_path, "-y",
-            "-i", input_path,
-            "-c", "copy",
-            output_path
-        ]
+        codec, pix_fmt = get_video_codec_and_format(input_path, ffprobe_path)
+        is_standard_h264 = (codec == "h264" and pix_fmt == "yuv420p")
+
+        if is_standard_h264:
+            print("-> Exact or near-exact match with standard H.264 detected. Copying directly with +faststart.")
+            cmd = [
+                ffmpeg_path, "-y",
+                "-i", input_path,
+                "-c", "copy",
+                "-movflags", "+faststart",
+                output_path
+            ]
+        else:
+            print(f"-> Near-exact match but non-standard stream ({codec}/{pix_fmt}). Re-encoding to H.264/yuv420p with +faststart.")
+            cmd = [
+                ffmpeg_path, "-y",
+                "-threads", "2",
+                "-i", input_path,
+                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-pix_fmt", "yuv420p", "-movflags", "+faststart",
+                "-c:a", "copy",
+                output_path
+            ]
     else:
         print("-> Aspect ratio mismatch. Utilizing blurred-canvas fill (no crop).")
         # Build Filter Complex
