@@ -198,9 +198,9 @@ export default function CreateReelPage() {
 
   const checkDuplicateVideo = async (videoPathOverride) => {
     const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
-    if (!pathToUse) return;
+    if (!pathToUse && !store.url) return;
     try {
-      const res = await videosApi.checkDuplicate(pathToUse);
+      const res = await videosApi.checkDuplicate(pathToUse, 10, store.url);
       if (res?.is_duplicate && res.matches?.length > 0) {
         setDuplicateMatch(res.matches[0]);
         setIsDismissedDuplicate(false);
@@ -220,7 +220,7 @@ export default function CreateReelPage() {
 
   const checkModeration = async (videoPathOverride) => {
     const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
-    if (!pathToUse) return;
+    if (!pathToUse && !store.url) return;
     if (moderationPollRef.current) clearInterval(moderationPollRef.current);
     if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
     setIsModerating(true);

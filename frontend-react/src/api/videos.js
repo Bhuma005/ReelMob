@@ -24,9 +24,9 @@ export const videosApi = {
     body: JSON.stringify({ video_path: videoPath, url, ...options })
   }),
   getHighlightStatus: (jobId) => fetchApi(`/api/video/highlights/status/${jobId}`),
-  checkDuplicate: (videoPath, threshold = 10) => fetchApi('/api/video/check-duplicate', {
+  checkDuplicate: (videoPath, threshold = 10, url = null) => fetchApi('/api/video/check-duplicate', {
     method: 'POST',
-    body: JSON.stringify({ video_path: videoPath, threshold })
+    body: JSON.stringify({ video_path: videoPath, threshold, url })
   }),
   checkModeration: (videoPath, url = null) => fetchApi('/api/video/moderation-check', {
     method: 'POST',
