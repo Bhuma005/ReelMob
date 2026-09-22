@@ -48,10 +48,13 @@ class TestCloudAIModelAndKeyResolution:
 
     def test_groq_model_normalization(self, monkeypatch):
         monkeypatch.delenv("GROQ_MODEL", raising=False)
-        assert get_groq_model() == "llama-3.3-70b-versatile"
+        assert get_groq_model() == "openai/gpt-oss-120b"
 
         monkeypatch.setenv("GROQ_MODEL", "groq/compound-mini")
-        assert get_groq_model() == "llama-3.3-70b-versatile"
+        assert get_groq_model() == "openai/gpt-oss-120b"
+
+        monkeypatch.setenv("GROQ_MODEL", "llama-3.3-70b-versatile")
+        assert get_groq_model() == "openai/gpt-oss-120b"
 
         monkeypatch.setenv("GROQ_MODEL", "llama-3.1-8b-instant")
         assert get_groq_model() == "llama-3.1-8b-instant"
@@ -87,7 +90,7 @@ class TestCloudAIModelAndKeyResolution:
         assert status["groq_configured"] is True
         assert status["is_available"] is True
         assert status["gemini_model"] == "gemini-2.0-flash"
-        assert status["groq_model"] == "llama-3.3-70b-versatile"
+        assert status["groq_model"] == "openai/gpt-oss-120b"
 
 
 class TestCloudAIGeneration:
@@ -220,7 +223,7 @@ class TestAIPipelineDiagnosticsAndFallbackReason:
             "description": "Watch this satisfying 9-bar espresso extraction.",
             "youtube_hashtags": ["#Shorts", "#Coffee", "#Espresso"],
             "instagram_hashtags": ["#Reels", "#CoffeeLover"],
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "success": True,
             "fallback_reason": None
         }
@@ -367,7 +370,7 @@ class TestAIPipelineDiagnosticsAndFallbackReason:
             "description": "Synthesized from caption after fast-path timeout.",
             "youtube_hashtags": ["#Shorts", "#Viral", "#Trending"],
             "instagram_hashtags": ["#Reels"],
-            "model": "llama-3.3-70b-versatile",
+            "model": "openai/gpt-oss-120b",
             "success": True,
             "fallback_reason": None
         }

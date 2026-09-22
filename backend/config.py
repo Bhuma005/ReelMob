@@ -83,6 +83,12 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip().strip("'\"")
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_KEY") or "").strip().strip("'\"")
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or os.getenv("GROQ_KEY") or "").strip().strip("'\"")
 
+# AI Model Configuration (allows environment overrides when providers deprecate models)
+DEFAULT_GEMINI_MODEL = "gemini-2.0-flash"
+DEFAULT_GROQ_MODEL = "openai/gpt-oss-120b"
+GEMINI_MODEL = (os.getenv("GEMINI_MODEL") or DEFAULT_GEMINI_MODEL).strip().strip("'\"")
+GROQ_MODEL = (os.getenv("GROQ_MODEL") or DEFAULT_GROQ_MODEL).strip().strip("'\"")
+
 # GitHub Actions Video Analysis Offloading
 ANALYSIS_OFFLOAD_MODE = os.getenv("ANALYSIS_OFFLOAD_MODE", "local").strip().lower()
 GITHUB_DISPATCH_TOKEN = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
