@@ -16,7 +16,7 @@ from typing import Optional, List, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse
+from fastapi.responses import FileResponse, JSONResponse, Response, RedirectResponse, StreamingResponse
 import yt_dlp
 
 from backend.logging_config import setup_logging, request_id_ctx_var
@@ -1062,8 +1062,18 @@ async def get_dashboard_videos(
         return {"videos": [], "total": 0, "page": page, "limit": limit, "total_pages": 1, "error": str(e)}
 
 
-@app.get("/api/dashboard/videos/{video_id}/stream", summary="Stream video stream redirect", description="Redirects to playable signed or public URL for a stored video.")
-async def stream_dashboard_video(video_id: str):
+@app.api_route(
+    "/api/dashboard/videos/{video_id}/stream",
+    methods=["GET", "HEAD"],
+    summary="Stream video stream proxy / redirect",
+    description="Streams video with full HTTP Range request support (206 Partial Content) or redirects to playable signed URL."
+)
+async def stream_dashboard_video(
+    video_id: str,
+    request: Request,
+    redirect: bool = False
+):
+    import httpx
     from cloud.cloud_auth import get_supabase_client
     clean_video_id = sanitize_filename_or_id(video_id)
     if not clean_video_id:
@@ -1077,20 +1087,76 @@ async def stream_dashboard_video(video_id: str):
         storage_path = v.get("storage_path")
         if not storage_path:
             raise HTTPException(status_code=404, detail="Video storage path not found")
+
+        target_url = None
         try:
-            signed = sb.storage.from_("reelgrab-videos").create_signed_url(storage_path, 3600*24)
+            signed = sb.storage.from_("reelgrab-videos").create_signed_url(storage_path, 3600 * 24)
             url = signed.get("signedURL") or signed.get("signedUrl") or signed
             if isinstance(url, dict):
                 url = url.get("signedURL") or url.get("signedUrl")
             if url and isinstance(url, str):
-                return RedirectResponse(url=url, status_code=307)
+                target_url = url
         except Exception as e:
             logger.warning(f"Signed url failed for stream {clean_video_id}: {e}")
 
-        pub_url = sb.storage.from_("reelgrab-videos").get_public_url(storage_path)
-        if pub_url:
-            return RedirectResponse(url=pub_url, status_code=307)
-        raise HTTPException(status_code=404, detail="Video stream URL unavailable")
+        if not target_url:
+            raise HTTPException(status_code=404, detail="Video stream URL unavailable")
+
+        # Explicit redirect requested by client without Range
+        if redirect and "range" not in request.headers:
+            return RedirectResponse(url=target_url, status_code=307)
+
+        # Forward range request to Supabase Storage and stream response
+        fwd_headers = {}
+        if "range" in request.headers:
+            fwd_headers["Range"] = request.headers["range"]
+
+        client = httpx.AsyncClient(follow_redirects=True, timeout=30.0)
+        try:
+            if request.method == "HEAD":
+                resp = await client.head(target_url, headers=fwd_headers)
+                headers = {
+                    "Accept-Ranges": "bytes",
+                    "Content-Type": resp.headers.get("content-type", "video/mp4"),
+                }
+                if "content-range" in resp.headers:
+                    headers["Content-Range"] = resp.headers["content-range"]
+                if "content-length" in resp.headers:
+                    headers["Content-Length"] = resp.headers["content-length"]
+                await client.aclose()
+                return Response(status_code=resp.status_code, headers=headers)
+
+            req_supa = client.build_request("GET", target_url, headers=fwd_headers)
+            resp_supa = await client.send(req_supa, stream=True)
+
+            async def content_stream():
+                try:
+                    async for chunk in resp_supa.aiter_bytes(chunk_size=65536):
+                        yield chunk
+                finally:
+                    await resp_supa.aclose()
+                    await client.aclose()
+
+            res_headers = {
+                "Accept-Ranges": "bytes",
+                "Content-Type": resp_supa.headers.get("content-type", "video/mp4"),
+            }
+            if "content-range" in resp_supa.headers:
+                res_headers["Content-Range"] = resp_supa.headers["content-range"]
+            if "content-length" in resp_supa.headers:
+                res_headers["Content-Length"] = resp_supa.headers["content-length"]
+
+            return StreamingResponse(
+                content_stream(),
+                status_code=resp_supa.status_code,
+                headers=res_headers
+            )
+        except Exception as stream_err:
+            await client.aclose()
+            logger.error(f"Stream proxy error for {clean_video_id}: {stream_err}")
+            # Fallback to redirect if streaming proxy encounters an error
+            return RedirectResponse(url=target_url, status_code=307)
+
     except HTTPException:
         raise
     except Exception as e:
