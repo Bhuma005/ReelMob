@@ -496,7 +496,7 @@ export default function CreateReelPage() {
         hashtags: store.allHashtags || [],
         thumbnail_url: store.metadata?.thumbnail_url || '',
         url: store.url,
-        format_id: store.activeFormatId || null,
+        format_id: activeFormatId || store.formats?.[0]?.format_id || null,
         opus_mode: store.isOpusMode,
         iso_schedule: store.aiAnalysisResult?.raw_result?.posting_recommendation?.iso_time || store.aiAnalysisResult?.iso_schedule || null,
         scheduled_time_human: store.aiAnalysisResult?.scheduled_time || null
@@ -509,7 +509,10 @@ export default function CreateReelPage() {
       setAutomationResult(res.automation_details || res);
       toast.success("Scheduled successfully to Cloud!");
     } catch (err) {
-      toast.error(err.message || "Automation failed");
+      const msg = typeof err?.message === 'string' && err.message.trim()
+        ? err.message
+        : 'Automation failed. Please check server logs or network.';
+      toast.error(msg);
     } finally {
       setIsAutomating(false);
     }

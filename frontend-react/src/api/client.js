@@ -11,12 +11,22 @@ export async function fetchApi(endpoint, options = {}) {
   });
 
   if (!response.ok) {
-    let errorMsg = 'An error occurred';
+    let errorMsg = '';
     try {
       const errData = await response.json();
-      errorMsg = errData.detail || errData.error || errData.message || errorMsg;
+      const extracted = errData.detail || errData.error || errData.message;
+      if (typeof extracted === 'string' && extracted.trim()) {
+        errorMsg = extracted;
+      } else if (Array.isArray(extracted) && extracted.length > 0) {
+        errorMsg = extracted.map(e => e.msg || JSON.stringify(e)).join(', ');
+      } else if (typeof extracted === 'object' && extracted !== null) {
+        errorMsg = extracted.message || JSON.stringify(extracted);
+      }
     } catch {
       errorMsg = response.statusText;
+    }
+    if (!errorMsg || !errorMsg.trim()) {
+      errorMsg = response.statusText || `Server returned error (${response.status})`;
     }
     throw new Error(errorMsg);
   }

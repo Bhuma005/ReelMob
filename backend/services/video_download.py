@@ -45,18 +45,20 @@ def ensure_video_downloaded(
 
     logger.info(f"⬇️ Downloading video on-demand to: {temp_filepath} from {url}")
 
-    format_selector = format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+    is_instagram = "instagram.com" in url.lower()
+    is_youtube = "youtube.com" in url.lower() or "youtu.be" in url.lower()
+
+    if is_instagram:
+        format_selector = format_id or 'best'
+    else:
+        format_selector = format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
+
     ydl_opts = {
         'format': format_selector,
         'outtmpl': temp_filepath,
         'quiet': False,
         'no_warnings': True,
         'socket_timeout': timeout_seconds,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'web']
-            }
-        },
         'http_headers': {
             'User-Agent': STANDARD_DOWNLOAD_UA,
             'Accept': '*/*',
@@ -64,6 +66,12 @@ def ensure_video_downloaded(
         },
         'nocheckcertificate': True,
     }
+    if is_youtube:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web']
+            }
+        }
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:

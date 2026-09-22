@@ -158,12 +158,13 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
     else:
         print("-> Aspect ratio mismatch. Utilizing blurred-canvas fill (no crop).")
         # Build Filter Complex
-        # BG: Scale to COVER the target bounds (force_original_aspect_ratio=increase) + Crop exactly to target + Blur
+        # BG: Downscale to low-res buffer (270x480) for lightweight blur without high memory consumption,
+        # then scale up to canvas dimensions to prevent Render/container OOM kills.
         # FG: Scale to FIT the target bounds (force_original_aspect_ratio=decrease)
         # OVERLAY: Center FG over BG. Also forcing SAR/DAR output so players don't stretch it.
         filter_complex = (
-            f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=increase,"
-            f"crop={canvas_w}:{canvas_h},boxblur=20:5[bg];"
+            f"[0:v]scale=270:480:force_original_aspect_ratio=increase,"
+            f"crop=270:480,boxblur=10:2,scale={canvas_w}:{canvas_h}[bg];"
             f"[0:v]scale={canvas_w}:{canvas_h}:force_original_aspect_ratio=decrease[fg];"
             f"[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={canvas_w}/{canvas_h}"
         )
@@ -173,7 +174,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
             "-threads", "2",
             "-i", input_path,
             "-lavfi", filter_complex,
-            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             "-c:a", "copy", 
             output_path

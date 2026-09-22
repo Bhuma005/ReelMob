@@ -92,7 +92,9 @@ app.add_middleware(
 )
 
 app.include_router(automate_router)
+app.include_router(automate_router, prefix="/api")
 app.include_router(yt_auth_router)
+app.include_router(yt_auth_router, prefix="/api")
 
 RATE_LIMIT_STORE: Dict[str, list] = {}
 

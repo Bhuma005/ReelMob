@@ -238,3 +238,67 @@ class TestDuplicateDetectionOnDemandDownload:
         data = res.json()
         assert data["hash"] == "0123456789abcdef"
         assert "is_duplicate" in data
+
+
+class TestPlatformSpecificDownloadOptions:
+    """Verify Instagram and YouTube format configurations in ensure_video_downloaded."""
+
+    def test_instagram_uses_best_format_without_youtube_extractor_args(self, tmp_path):
+        captured_opts = {}
+
+        def _mock_ydl_init(opts):
+            nonlocal captured_opts
+            captured_opts = opts
+            outtmpl = opts.get("outtmpl", "")
+            if outtmpl:
+                Path(outtmpl).write_bytes(b"dummy_ig_content")
+            mock = MagicMock()
+            mock.download.return_value = 0
+            mock.__enter__.return_value = mock
+            return mock
+
+        with patch("yt_dlp.YoutubeDL", side_effect=_mock_ydl_init):
+            out = ensure_video_downloaded("https://www.instagram.com/reel/DdiG3IoKWGT/", target_dir=str(tmp_path))
+
+        assert captured_opts.get("format") == "best"
+        assert "extractor_args" not in captured_opts
+        if os.path.exists(out):
+            os.remove(out)
+
+    def test_youtube_uses_compound_format_and_player_client_args(self, tmp_path):
+        captured_opts = {}
+
+        def _mock_ydl_init(opts):
+            nonlocal captured_opts
+            captured_opts = opts
+            outtmpl = opts.get("outtmpl", "")
+            if outtmpl:
+                Path(outtmpl).write_bytes(b"dummy_yt_content")
+            mock = MagicMock()
+            mock.download.return_value = 0
+            mock.__enter__.return_value = mock
+            return mock
+
+        with patch("yt_dlp.YoutubeDL", side_effect=_mock_ydl_init):
+            out = ensure_video_downloaded("https://www.youtube.com/shorts/dQw4w9WgXcQ", target_dir=str(tmp_path))
+
+        assert "bestvideo[ext=mp4]+bestaudio" in captured_opts.get("format", "")
+        assert "extractor_args" in captured_opts
+        assert "youtube" in captured_opts["extractor_args"]
+        if os.path.exists(out):
+            os.remove(out)
+
+
+class TestAutomateEndpointsRouting:
+    """Verify /automate and /api/automate routes are both active."""
+
+    def test_automate_endpoint_available_at_both_prefixes(self):
+        client = TestClient(app)
+
+        # Sending invalid payload should yield 422 Unprocessable Entity, verifying route exists and is mounted
+        res1 = client.post("/automate", json={})
+        assert res1.status_code == 422
+
+        res2 = client.post("/api/automate", json={})
+        assert res2.status_code == 422
+
