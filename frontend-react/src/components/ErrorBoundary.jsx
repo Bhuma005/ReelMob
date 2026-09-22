@@ -31,7 +31,6 @@ export class ErrorBoundary extends React.Component {
 
   handleManualReload = () => {
     clearStaleChunkReloadMarker();
-    this.setState({ hasError: false, error: null, reloading: false });
     window.location.reload();
   };
 
