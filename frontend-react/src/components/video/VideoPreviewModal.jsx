@@ -32,6 +32,7 @@ export function VideoPreviewModal({
     '';
 
   const [currentSrc, setCurrentSrc] = useState(initialSrc);
+  const videoSrc = currentSrc;
 
   const handleVideoError = () => {
     if (fallbackProxySrc && currentSrc !== fallbackProxySrc) {
@@ -325,9 +326,9 @@ export function VideoPreviewModal({
               </div>
 
               {/* Direct Open / Download Button in Preview Card */}
-              {videoSrc && (
+              {currentSrc && (
                 <a
-                  href={videoSrc}
+                  href={currentSrc}
                   target="_blank"
                   rel="noopener noreferrer"
                   download={filename}
