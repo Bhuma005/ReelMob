@@ -21,6 +21,7 @@ logger = logging.getLogger("reelsmob.automate")
 
 from backend.ai_pipeline import generate_shorts_content
 from backend.fit_to_canvas import fit_to_canvas
+from backend.services.video_download import async_ensure_video_downloaded
 from cloud.enqueue import enqueue_video
 from cloud.cloud_auth import get_supabase_client
 
@@ -110,53 +111,15 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
     # 2. Download the video locally to a temporary location
     downloads_dir = Path(__file__).parent.parent / "downloads"
     downloads_dir.mkdir(exist_ok=True)
-    temp_id = str(uuid.uuid4())
-    temp_filepath = str(downloads_dir / f"auto_{temp_id}.mp4")
-
-    logger.info(f"⬇️ Downloading video to temporary file: {temp_filepath}...")
-    format_selector = req.format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
-    ydl_opts = {
-        'format': format_selector,
-        'outtmpl': temp_filepath,
-        'quiet': False,
-        'no_warnings': True,
-        'socket_timeout': 30,
-        'extractor_args': {
-            'youtube': {
-                'player_client': ['ios', 'android', 'web']
-            }
-        },
-        'http_headers': {
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36',
-            'Accept': '*/*',
-            'Accept-Language': 'en-US,en;q=0.9',
-        },
-        'nocheckcertificate': True,
-    }
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            await asyncio.to_thread(ydl.download, [req.url])
-    except Exception as e:
-        logger.warning(f"Primary format download failed: {e}. Trying secondary format fallback...")
-        try:
-            fallback_opts = {
-                'format': 'best',
-                'outtmpl': temp_filepath,
-                'quiet': True,
-                'no_warnings': True,
-                'socket_timeout': 30,
-                'nocheckcertificate': True,
-            }
-            with yt_dlp.YoutubeDL(fallback_opts) as ydl:
-                await asyncio.to_thread(ydl.download, [req.url])
-        except Exception as e2:
-            logger.error(f"Download failed completely: {e2}")
-            if os.path.exists(temp_filepath):
-                os.remove(temp_filepath)
-            raise HTTPException(status_code=400, detail=f"Download failed: {str(e2)}")
-
-    if not os.path.exists(temp_filepath) or os.path.getsize(temp_filepath) == 0:
-        raise HTTPException(status_code=400, detail="Downloaded video file is missing or empty.")
+        temp_filepath = await async_ensure_video_downloaded(
+            url=req.url,
+            target_dir=str(downloads_dir),
+            format_id=req.format_id,
+            prefix="auto_"
+        )
+    except Exception as de:
+        raise HTTPException(status_code=400, detail=f"Download failed: {str(de)}")
 
     # Apply Auto-Detect & Fit-to-Canvas (Master Requirement)
     fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
