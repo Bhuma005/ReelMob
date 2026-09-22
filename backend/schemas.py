@@ -196,14 +196,22 @@ class DuplicateMatch(BaseModel):
 
 
 class DuplicateCheckRequest(BaseModel):
-    video_path: str = Field(..., max_length=1000, description="Local video filename or path inside downloads/")
+    video_path: Optional[str] = Field(default=None, max_length=1000, description="Local video filename or path inside downloads/")
+    url: Optional[str] = Field(default=None, max_length=2048, description="Source video URL to download on-demand if local file missing")
     threshold: int = Field(default=10, ge=0, le=64, description="Maximum hamming distance threshold")
 
     @field_validator('video_path')
     @classmethod
-    def check_video_path(cls, v: str) -> str:
-        if not v or '..' in v or '\0' in v:
+    def check_video_path(cls, v: Optional[str]) -> Optional[str]:
+        if v and ('..' in v or '\0' in v):
             raise ValueError("Invalid or unsafe video_path")
+        return v
+
+    @field_validator('url')
+    @classmethod
+    def check_url(cls, v: Optional[str]) -> Optional[str]:
+        if v and v.strip():
+            return validate_video_url(v)
         return v
 
 

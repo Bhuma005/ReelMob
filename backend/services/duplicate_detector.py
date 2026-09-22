@@ -46,15 +46,15 @@ def compute_image_dhash(image: Image.Image) -> str:
     return f"{diff_bits:016x}"
 
 
-def compute_video_perceptual_hash(video_path: str) -> str:
+def compute_video_perceptual_hash(video_path: str, url: Optional[str] = None) -> str:
     """
     Computes primary perceptual dHash for a video file by sampling keyframes.
     Returns 16-character hexadecimal string.
     """
     candidate_paths = [
         video_path,
-        os.path.join("downloads", video_path),
-        os.path.join("downloads", os.path.basename(video_path))
+        os.path.join("downloads", video_path) if video_path else None,
+        os.path.join("downloads", os.path.basename(video_path)) if video_path else None
     ]
     resolved_path = None
     for p in candidate_paths:
@@ -62,66 +62,81 @@ def compute_video_perceptual_hash(video_path: str) -> str:
             resolved_path = p
             break
 
+    downloaded_temp_video = None
     if not resolved_path:
-        raise FileNotFoundError(f"Video file not found at: {video_path}")
+        if url and url.strip():
+            logger.info(f"Local video not found for perceptual hash. Downloading on-demand from: {url}")
+            from backend.services.video_download import ensure_video_downloaded
+            resolved_path = ensure_video_downloaded(url.strip(), prefix="dup_")
+            downloaded_temp_video = resolved_path
+        else:
+            raise FileNotFoundError(f"Video file not found at: {video_path}")
 
-    ffmpeg_path, ffprobe_path = get_ff_paths()
-    duration = get_video_duration(resolved_path, ffprobe_path)
-
-    # Frame extraction via OpenCV
     try:
-        import cv2
-        cap = cv2.VideoCapture(resolved_path)
-        if cap.isOpened():
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-            if duration <= 0 and total_frames > 0:
-                duration = total_frames / fps
+        ffmpeg_path, ffprobe_path = get_ff_paths()
+        duration = get_video_duration(resolved_path, ffprobe_path)
 
-            # Sample at mid-point (50%)
-            mid_frame = max(0, int(total_frames * 0.5)) if total_frames > 0 else 0
-            cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
-            ret, frame = cap.read()
-            cap.release()
+        # Frame extraction via OpenCV
+        try:
+            import cv2
+            cap = cv2.VideoCapture(resolved_path)
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                if duration <= 0 and total_frames > 0:
+                    duration = total_frames / fps
 
-            if ret and frame is not None:
-                # Convert BGR OpenCV image to RGB PIL image
-                rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                pil_img = Image.fromarray(rgb_frame)
-                return compute_image_dhash(pil_img)
-    except Exception as exc:
-        logger.warning(f"OpenCV frame capture for hash failed: {exc}")
+                # Sample at mid-point (50%)
+                mid_frame = max(0, int(total_frames * 0.5)) if total_frames > 0 else 0
+                cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
+                ret, frame = cap.read()
+                cap.release()
 
-    # If OpenCV failed or wasn't available, try ffmpeg thumbnail extraction
-    import tempfile
-    import subprocess
+                if ret and frame is not None:
+                    # Convert BGR OpenCV image to RGB PIL image
+                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                    pil_img = Image.fromarray(rgb_frame)
+                    return compute_image_dhash(pil_img)
+        except Exception as exc:
+            logger.warning(f"OpenCV frame capture for hash failed: {exc}")
 
-    temp_img = tempfile.mktemp(suffix=".jpg")
-    try:
-        sample_time = max(0.1, duration * 0.5) if duration > 0 else 0.5
-        cmd = [
-            ffmpeg_path,
-            "-y",
-            "-ss", str(sample_time),
-            "-i", resolved_path,
-            "-vframes", "1",
-            "-q:v", "2",
-            temp_img
-        ]
-        subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
-        if os.path.exists(temp_img) and os.path.getsize(temp_img) > 0:
-            with Image.open(temp_img) as img:
-                return compute_image_dhash(img)
-    except Exception as exc:
-        logger.error(f"FFmpeg frame extraction for hash failed: {exc}")
+        # If OpenCV failed or wasn't available, try ffmpeg thumbnail extraction
+        import tempfile
+        import subprocess
+
+        temp_img = tempfile.mktemp(suffix=".jpg")
+        try:
+            sample_time = max(0.1, duration * 0.5) if duration > 0 else 0.5
+            cmd = [
+                ffmpeg_path,
+                "-y",
+                "-ss", str(sample_time),
+                "-i", resolved_path,
+                "-vframes", "1",
+                "-q:v", "2",
+                temp_img
+            ]
+            subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            if os.path.exists(temp_img) and os.path.getsize(temp_img) > 0:
+                with Image.open(temp_img) as img:
+                    return compute_image_dhash(img)
+        except Exception as exc:
+            logger.error(f"FFmpeg frame extraction for hash failed: {exc}")
+        finally:
+            if os.path.exists(temp_img):
+                try:
+                    os.remove(temp_img)
+                except Exception:
+                    pass
+
+        raise ValueError(f"Could not compute perceptual hash for {video_path}")
     finally:
-        if os.path.exists(temp_img):
+        # Clean up temporary on-demand downloaded video
+        if downloaded_temp_video and os.path.exists(downloaded_temp_video):
             try:
-                os.remove(temp_img)
+                os.remove(downloaded_temp_video)
             except Exception:
                 pass
-
-    raise ValueError(f"Could not compute perceptual hash for {video_path}")
 
 
 def hamming_distance(hash1: str, hash2: str) -> int:
@@ -152,7 +167,7 @@ def register_video_hash(video_id: str, title: str, hash_val: str):
         logger.debug(f"Supabase hash update skipped or failed: {exc}")
 
 
-def check_video_duplicate(video_path: str, threshold: int = 10) -> Dict[str, Any]:
+def check_video_duplicate(video_path: str, threshold: int = 10, url: Optional[str] = None) -> Dict[str, Any]:
     """
     Checks if the target video is a duplicate or near-duplicate of any video in video_library.
     Returns:
@@ -164,7 +179,7 @@ def check_video_duplicate(video_path: str, threshold: int = 10) -> Dict[str, Any
         ]
     }
     """
-    video_hash = compute_video_perceptual_hash(video_path)
+    video_hash = compute_video_perceptual_hash(video_path, url=url)
 
     existing_videos: List[Dict[str, Any]] = []
 

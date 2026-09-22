@@ -1318,11 +1318,11 @@ def execute_highlight_job(
                     files.sort(key=os.path.getmtime, reverse=True)
                     path_to_use = files[0]
 
-        if not path_to_use:
-            raise ValueError("No video file specified or found in downloads.")
+        if not path_to_use and not url:
+            raise ValueError("No video file specified or found in downloads, and no URL provided.")
 
         clips = detect_highlights(
-            video_path=path_to_use,
+            video_path=path_to_use or "",
             target_duration_min=target_duration_min,
             target_duration_max=target_duration_max,
             num_clips=num_clips,
@@ -1381,31 +1381,34 @@ async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
     """
     from backend.services.duplicate_detector import check_video_duplicate
 
-    clean_path = sanitize_filename_or_id(req.video_path)
+    clean_path = sanitize_filename_or_id(req.video_path) if req.video_path else ""
     candidate_paths = [
-        os.path.join("downloads", clean_path),
-        clean_path,
-        os.path.join("downloads", os.path.basename(clean_path)),
+        os.path.join("downloads", clean_path) if clean_path else None,
+        clean_path if clean_path else None,
+        os.path.join("downloads", os.path.basename(clean_path)) if clean_path else None,
     ]
     input_file = None
     for p in candidate_paths:
-        if os.path.exists(p) and os.path.isfile(p):
+        if p and os.path.exists(p) and os.path.isfile(p):
             input_file = p
             break
 
-    if not input_file:
+    if not input_file and not req.url:
         raise HTTPException(
             status_code=404,
-            detail=f"Video file not found for path: {clean_path}"
+            detail=f"Video file not found for path: {clean_path} and no URL provided"
         )
 
     try:
         result = await asyncio.to_thread(
             check_video_duplicate,
-            video_path=input_file,
-            threshold=req.threshold
+            video_path=input_file or clean_path or "",
+            threshold=req.threshold,
+            url=req.url
         )
         return result
+    except FileNotFoundError as fnf:
+        raise HTTPException(status_code=404, detail=str(fnf))
     except Exception as exc:
         logger.error(f"Duplicate check failed: {exc}", exc_info=True)
         raise HTTPException(
@@ -1442,10 +1445,10 @@ def execute_moderation_job(
                     files.sort(key=os.path.getmtime, reverse=True)
                     path_to_use = files[0]
 
-        if not path_to_use:
-            raise ValueError("No video file specified or found in downloads.")
+        if not path_to_use and not url:
+            raise ValueError("No video file specified or found in downloads, and no URL provided.")
 
-        result = check_content_moderation(video_path=path_to_use, url=url)
+        result = check_content_moderation(video_path=path_to_use or "", url=url)
         job["status"] = "COMPLETED"
         job["result"] = result
     except Exception as exc:

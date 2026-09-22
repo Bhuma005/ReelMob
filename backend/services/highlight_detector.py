@@ -218,8 +218,8 @@ def detect_highlights(
     # Locate video file
     candidate_paths = [
         video_path,
-        os.path.join("downloads", video_path),
-        os.path.join("downloads", os.path.basename(video_path))
+        os.path.join("downloads", video_path) if video_path else None,
+        os.path.join("downloads", os.path.basename(video_path)) if video_path else None
     ]
     resolved_path = None
     for p in candidate_paths:
@@ -227,72 +227,87 @@ def detect_highlights(
             resolved_path = p
             break
 
+    downloaded_temp_video = None
     if not resolved_path:
-        raise FileNotFoundError(f"Video file not found at: {video_path}")
+        if url and url.strip():
+            logger.info(f"Local video not found for highlights. Downloading on-demand from: {url}")
+            from backend.services.video_download import ensure_video_downloaded
+            resolved_path = ensure_video_downloaded(url.strip(), prefix="hl_")
+            downloaded_temp_video = resolved_path
+        else:
+            raise FileNotFoundError(f"Video file not found at: {video_path}")
 
-    ffmpeg_path, ffprobe_path = get_ff_paths()
-    duration = get_video_duration(resolved_path, ffprobe_path)
-
-    # OpenCV fallback for duration if ffprobe gave 0.0
-    if duration <= 0.0:
-        try:
-            import cv2
-            cap = cv2.VideoCapture(resolved_path)
-            if cap.isOpened():
-                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-                total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-                duration = total_frames / fps if fps > 0 else 0.0
-                cap.release()
-        except Exception:
-            pass
-
-    if duration <= 0.0:
-        raise ValueError(f"Could not determine duration for video: {video_path}")
-
-    # If video is already very short
-    if duration <= target_duration_min:
-        return _get_fallback_highlights(duration, target_duration_min, target_duration_max, num_clips)
-
-    # Sample keyframes for Gemini scene analysis
-    sample_timestamps = [
-        round(duration * 0.1, 2),
-        round(duration * 0.35, 2),
-        round(duration * 0.5, 2),
-        round(duration * 0.75, 2),
-        round(duration * 0.9, 2),
-    ]
-
-    extracted_frames = []
-    temp_dir = tempfile.mkdtemp(prefix="reelsmob_hl_")
     try:
-        for idx, ts in enumerate(sample_timestamps):
-            out_frame = os.path.join(temp_dir, f"frame_{idx}.jpg")
-            if _extract_frame_at_time(resolved_path, ts, out_frame, ffmpeg_path):
-                extracted_frames.append(out_frame)
+        ffmpeg_path, ffprobe_path = get_ff_paths()
+        duration = get_video_duration(resolved_path, ffprobe_path)
 
-        # Attempt Gemini analysis if API key is present and frames were extracted
-        if GEMINI_API_KEY and extracted_frames:
-            ai_clips = _analyze_with_gemini_vision(
-                frame_paths=extracted_frames,
-                timestamps=sample_timestamps[:len(extracted_frames)],
-                duration=duration,
-                target_min=target_duration_min,
-                target_max=target_duration_max,
-                num_clips=num_clips
-            )
-            if ai_clips:
-                return ai_clips
+        # OpenCV fallback for duration if ffprobe gave 0.0
+        if duration <= 0.0:
+            try:
+                import cv2
+                cap = cv2.VideoCapture(resolved_path)
+                if cap.isOpened():
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                    duration = total_frames / fps if fps > 0 else 0.0
+                    cap.release()
+            except Exception:
+                pass
 
-        # Fallback to intelligent heuristic duration segmenting
-        return _get_fallback_highlights(duration, target_duration_min, target_duration_max, num_clips)
+        if duration <= 0.0:
+            raise ValueError(f"Could not determine duration for video: {video_path}")
 
-    finally:
-        # Clean up temporary directory and frames
+        # If video is already very short
+        if duration <= target_duration_min:
+            return _get_fallback_highlights(duration, target_duration_min, target_duration_max, num_clips)
+
+        # Sample keyframes for Gemini scene analysis
+        sample_timestamps = [
+            round(duration * 0.1, 2),
+            round(duration * 0.35, 2),
+            round(duration * 0.5, 2),
+            round(duration * 0.75, 2),
+            round(duration * 0.9, 2),
+        ]
+
+        extracted_frames = []
+        temp_dir = tempfile.mkdtemp(prefix="reelsmob_hl_")
         try:
-            for f in extracted_frames:
-                if os.path.exists(f):
-                    os.remove(f)
-            if os.path.exists(temp_dir):
-                os.rmdir(temp_dir)
-        except Exception:
-            pass
+            for idx, ts in enumerate(sample_timestamps):
+                out_frame = os.path.join(temp_dir, f"frame_{idx}.jpg")
+                if _extract_frame_at_time(resolved_path, ts, out_frame, ffmpeg_path):
+                    extracted_frames.append(out_frame)
+
+            # Attempt Gemini analysis if API key is present and frames were extracted
+            if GEMINI_API_KEY and extracted_frames:
+                ai_clips = _analyze_with_gemini_vision(
+                    frame_paths=extracted_frames,
+                    timestamps=sample_timestamps[:len(extracted_frames)],
+                    duration=duration,
+                    target_min=target_duration_min,
+                    target_max=target_duration_max,
+                    num_clips=num_clips
+                )
+                if ai_clips:
+                    return ai_clips
+
+            # Fallback to intelligent heuristic duration segmenting
+            return _get_fallback_highlights(duration, target_duration_min, target_duration_max, num_clips)
+
+        finally:
+            # Clean up temporary directory and frames
+            try:
+                for f in extracted_frames:
+                    if os.path.exists(f):
+                        os.remove(f)
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+            except Exception:
+                pass
+    finally:
+        # Clean up temporary on-demand downloaded video
+        if downloaded_temp_video and os.path.exists(downloaded_temp_video):
+            try:
+                os.remove(downloaded_temp_video)
+            except Exception:
+                pass
