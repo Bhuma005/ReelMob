@@ -83,6 +83,11 @@ YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY", "").strip().strip("'\"")
 GEMINI_API_KEY = (os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY") or os.getenv("GEMINI_KEY") or "").strip().strip("'\"")
 GROQ_API_KEY = (os.getenv("GROQ_API_KEY") or os.getenv("GROQ_KEY") or "").strip().strip("'\"")
 
+# GitHub Actions Video Analysis Offloading
+ANALYSIS_OFFLOAD_MODE = os.getenv("ANALYSIS_OFFLOAD_MODE", "local").strip().lower()
+GITHUB_DISPATCH_TOKEN = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
+GITHUB_REPOSITORY = os.getenv("GITHUB_REPOSITORY", "Bhuma005/ReelMob").strip()
+
 
 def mask_secret(secret: str, visible_chars: int = 4) -> str:
     """Returns a masked representation of a secret string (••••••••a1b2)."""
@@ -93,20 +98,45 @@ def mask_secret(secret: str, visible_chars: int = 4) -> str:
     return "••••••••" + secret[-visible_chars:]
 
 
+def validate_offload_config():
+    """Fails fast if ANALYSIS_OFFLOAD_MODE is 'github_actions' but GITHUB_DISPATCH_TOKEN is missing."""
+    mode = os.getenv("ANALYSIS_OFFLOAD_MODE", "local").strip().lower()
+    if mode == "github_actions":
+        token = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
+        if not token:
+            raise EnvironmentError(
+                "ANALYSIS_OFFLOAD_MODE is set to 'github_actions' but GITHUB_DISPATCH_TOKEN is missing or empty. "
+                "Please set GITHUB_DISPATCH_TOKEN in your environment with Actions/Contents read-write permissions."
+            )
+
+
 def validate_config(fail_fast: bool = False) -> dict:
     """
     Checks essential configuration.
-    If fail_fast is True, raises RuntimeError when critical paths are invalid.
+    If fail_fast is True, raises RuntimeError/EnvironmentError when critical paths are invalid.
     """
+    offload_mode = os.getenv("ANALYSIS_OFFLOAD_MODE", "local").strip().lower()
+    github_token = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
+
     status = {
         "downloads_dir": os.path.exists(DOWNLOAD_DIR) and os.access(DOWNLOAD_DIR, os.W_OK),
         "supabase_configured": bool(SUPABASE_URL and SUPABASE_SERVICE_KEY),
         "gemini_configured": bool(GEMINI_API_KEY),
         "groq_configured": bool(GROQ_API_KEY),
         "youtube_api_configured": bool(YOUTUBE_API_KEY),
+        "analysis_offload_mode": offload_mode,
+        "github_dispatch_configured": bool(github_token),
     }
+
+    if offload_mode == "github_actions" and not github_token:
+        err_msg = (
+            "ANALYSIS_OFFLOAD_MODE is set to 'github_actions' but GITHUB_DISPATCH_TOKEN is missing or empty."
+        )
+        if fail_fast:
+            raise EnvironmentError(err_msg)
 
     if fail_fast and not status["downloads_dir"]:
         raise RuntimeError(f"DOWNLOAD_DIR is not writable: {DOWNLOAD_DIR}")
         
     return status
+

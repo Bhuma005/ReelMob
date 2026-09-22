@@ -5,10 +5,13 @@ import logging
 import uuid
 import glob
 import re
+import json
 import urllib.request
+import urllib.error
 import tempfile
 import shutil
 import traceback
+from datetime import datetime
 from typing import Optional, List, Dict, Any, Literal
 from fastapi import FastAPI, HTTPException, Request, BackgroundTasks
 from fastapi.exceptions import RequestValidationError
@@ -26,6 +29,7 @@ from backend.config import (
     RATE_LIMIT_SECONDS,
     YTDL_TIMEOUT_SECONDS,
     validate_config,
+    validate_offload_config,
 )
 from backend.retry import async_retry, is_transient_error
 from backend.schemas import (
@@ -62,6 +66,8 @@ logger = logging.getLogger("reelsmob.main")
 
 # Fail-safe config sanity check at startup
 validate_config(fail_fast=False)
+from backend.config import validate_offload_config
+validate_offload_config()
 
 APP_START_TIME = time.time()
 app = FastAPI(title=APP_NAME, version="2.0.0")
@@ -590,19 +596,17 @@ def get_content_hash(url: str, title: str, description: str) -> str:
     combined = f"url:{url or ''}|title:{title or ''}|desc:{description or ''}".strip()
     return hashlib.sha256(combined.encode('utf-8')).hexdigest()
 
-async def execute_ai_analysis_job(job_id: str, title: str, description: str, url: str, video_path: str = ""):
+async def execute_ai_analysis_job(job_id: str, title: str, description: str, url: str, video_path: str = "", content_hash: str = ""):
     if job_id not in AI_JOBS_STORE:
         return
     
     job = AI_JOBS_STORE[job_id]
-    content_hash = job.get("content_hash")
+    content_hash = content_hash or job.get("content_hash")
     
     try:
         if job.get("status") == "CANCELLED":
             return
             
-        from backend.video_analyzer import analyze_video_content
-
         def _update_progress(pct: int, step_msg: str):
             if job.get("status") != "CANCELLED":
                 job["progress"] = max(job.get("progress", 0), pct)
@@ -615,323 +619,30 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         else:
             job["current_step"] = "Analyzing reel caption, hashtags & preview frames..."
         job["started_at"] = datetime.now().isoformat()
-        
-        # Run real video frame & caption analyzer with fast-path timeout for 0.1 CPU
-        video_analysis_timeout_sec = float(os.getenv("VIDEO_ANALYSIS_TIMEOUT_SECONDS", "60.0"))
-        timed_out = False
-        try:
-            video_analysis = await asyncio.wait_for(
-                asyncio.to_thread(
-                    analyze_video_content,
-                    video_path=video_path,
-                    url=url,
-                    raw_title=title,
-                    raw_description=description,
-                    progress_callback=_update_progress,
-                    skip_audio=True
-                ),
-                timeout=video_analysis_timeout_sec
-            )
-        except asyncio.TimeoutError:
-            logger.warning(
-                f"Video frame analysis timed out after {video_analysis_timeout_sec}s for job {job_id}. "
-                f"Degrading gracefully to lightweight caption mode."
-            )
-            timed_out = True
-            video_analysis = {
-                "video_analyzed": False,
-                "vision_success": False,
-                "audio_success": False,
-                "visual_description": "",
-                "analysis_source": "caption_fallback",
-                "source_label": "From caption — video analysis timed out",
-                "fallback_reason": "video_analysis_timeout_lightweight_mode"
-            }
-            _update_progress(60, "Frame extraction timed out; switching to lightweight caption analysis...")
-        
-        if job.get("status") == "CANCELLED":
-            return
-            
-        job["status"] = "ANALYZING"
-        job["progress"] = max(job.get("progress", 0), 65)
-        if video_analysis.get("vision_success"):
-            job["current_step"] = f"Visual frames analyzed via Gemini Flash ({video_analysis.get('vision_model_used')})..."
-        elif video_analysis.get("audio_success"):
-            job["current_step"] = "Spoken dialogue transcribed via Whisper..."
-        elif timed_out:
-            job["current_step"] = "Frame extraction timed out; synthesizing viral metadata from caption context..."
-        else:
-            job["current_step"] = "Analyzing context & emotional retention hooks..."
-        await asyncio.sleep(0.1)
-        
-        if job.get("status") == "CANCELLED":
-            return
-            
-        job["status"] = "GENERATING_METADATA"
-        job["progress"] = max(job.get("progress", 0), 80)
-        job["current_step"] = "Generating viral titles, description & tags with Groq LPU..."
-        
-        # ── 1. Priority: ReelsMob Cloud AI (Gemini + Groq) ──────────────────────
-        cloud_meta = None
-        fallback_reason: Optional[str] = "video_analysis_timeout_lightweight_mode" if timed_out else None
-        try:
-            from backend.services.cloud_ai import (
-                is_cloud_ai_available,
-                generate_metadata_with_groq,
-                get_gemini_api_key,
-                get_groq_api_key
-            )
-            if is_cloud_ai_available():
-                logger.info("⚡ Using ReelsMob Cloud AI (Groq + Gemini) for instant metadata generation...")
-                cloud_meta = await asyncio.to_thread(
-                    generate_metadata_with_groq,
-                    visual_summary=video_analysis.get("visual_description", "") or description or title,
-                    caption=description
-                )
-                if not cloud_meta or not cloud_meta.get("success"):
-                    fallback_reason = (cloud_meta or {}).get("fallback_reason") or (cloud_meta or {}).get("error") or "Cloud AI metadata generation unsuccessful"
-                    logger.warning(f"Cloud AI generation unsuccessful for job {job_id}: {fallback_reason}")
-            else:
-                missing_keys = []
-                if not get_gemini_api_key():
-                    missing_keys.append("GEMINI_API_KEY")
-                if not get_groq_api_key():
-                    missing_keys.append("GROQ_API_KEY")
-                fallback_reason = f"Cloud AI unconfigured: missing {', '.join(missing_keys)}"
-                logger.warning(f"Job {job_id}: {fallback_reason}")
-        except Exception as e:
-            fallback_reason = f"Cloud AI metadata generation attempt error: {e}"
-            logger.warning(f"Job {job_id}: {fallback_reason}")
 
-        if cloud_meta and cloud_meta.get("success"):
-            best_title = cloud_meta.get("title") or title or "Must Watch Viral Scene 🔥"
-            desc = cloud_meta.get("description") or description or ""
-            youtube_tags = cloud_meta.get("youtube_hashtags", ["#Shorts", "#ShortsFeed", "#Viral"])
-            instagram_tags = cloud_meta.get("instagram_hashtags", ["#Reels", "#Viral"])
-            
-            source_label = video_analysis.get("source_label") or "Based on video analysis"
-            analysis_source = video_analysis.get("analysis_source") or "video_visual"
-            video_analyzed = video_analysis.get("video_analyzed", True)
-            cloud_sub_fallback = cloud_meta.get("fallback_reason") or (fallback_reason if timed_out else None)
-
-            raw_result = {
-                "title": best_title,
-                "description": desc,
-                "youtube_hashtags": youtube_tags,
-                "instagram_hashtags": instagram_tags,
-                "title_candidates": [{"title": best_title, "strategy": "Cloud AI Viral Hook", "score": 98}],
-                "viewer_appeal_score": 96,
-                "title_reason": ["Video-grounded visual hook" if not timed_out else "Fast-path context hook", "High CTR algorithm match"],
-                "posting_recommendation": {
-                    "human_readable_time": "07:30 PM",
-                    "reason": "Peak engagement slot for short-form video audience."
-                },
-                "ai_failed": False,
-                "source_label": source_label,
-                "analysis_source": analysis_source,
-                "video_analyzed": video_analyzed,
-                "visual_description": video_analysis.get("visual_description", ""),
-                "audio_transcript": video_analysis.get("audio_transcript", ""),
-                "fallback_reason": cloud_sub_fallback,
-                "provider": f"ReelsMob Cloud AI ({cloud_meta.get('model', 'Groq/Gemini')})"
-            }
-            
-            result_payload = {
-                "viral_title": best_title,
-                "optimized_description": desc,
-                "youtube": youtube_tags,
-                "instagram": instagram_tags,
-                "analysis": "Generated via ReelsMob Cloud AI using video visual inspection and viral synthesis." if not timed_out else "Generated via ReelsMob Cloud AI using lightweight caption context (video analysis timed out).",
-                "confidence_notes": "VERY HIGH (Cloud AI)" if not timed_out else "HIGH (Lightweight Cloud AI)",
-                "scheduled_time": "07:30 PM",
-                "raw_result": raw_result,
-                "ai_failed": False,
-                "source_label": source_label,
-                "analysis_source": analysis_source,
-                "video_analyzed": video_analyzed,
-                "fallback_reason": cloud_sub_fallback
-            }
-            
-            job["status"] = "COMPLETED"
-            job["progress"] = 100
-            job["current_step"] = "AI optimization complete (Cloud AI)"
-            job["completed_at"] = datetime.now().isoformat()
-            job["result"] = result_payload
-            job["fallback_reason"] = cloud_sub_fallback
-            
-            if content_hash:
-                AI_CACHE_STORE[content_hash] = result_payload
-            return
-
-        # ── 2. Cloud AI Fallback / Agent Execution ────────────────────────────
-        from backend.services.cloud_ai import get_groq_api_key, get_gemini_api_key
-        cloud_keys_present = bool(get_groq_api_key() or get_gemini_api_key())
-            
-        if not cloud_keys_present:
-            if not fallback_reason:
-                fallback_reason = "Cloud AI keys unconfigured (GEMINI_API_KEY and GROQ_API_KEY missing)"
-            logger.warning(f"Cloud AI keys unconfigured for job {job_id}. Using deterministic fallback metadata. Reason: {fallback_reason}")
-            fallback_title = title or "Trending Reel"
-            fallback_desc = description or "Watch this trending video! #Shorts #Viral"
-            fallback_tags = ["#Shorts", "#Viral", "#Trending", "#Reel"]
-            
-            raw_result = {
-                "title": fallback_title,
-                "description": fallback_desc,
-                "youtube_hashtags": fallback_tags,
-                "instagram_hashtags": fallback_tags,
-                "title_candidates": [{"strategy": "Original", "title": fallback_title}],
-                "viewer_appeal_score": 75,
-                "title_reason": ["Deterministic fallback (Cloud AI unconfigured)"],
-                "posting_recommendation": {
-                    "human_readable_time": "07:30 PM",
-                    "reason": "Standard peak evening engagement slot."
-                },
-                "ai_failed": True,
-                "fallback": True,
-                "fallback_reason": fallback_reason,
-                "source_label": "From caption — video analysis unavailable",
-                "analysis_source": "caption_fallback",
-                "video_analyzed": False
-            }
-            
-            result_payload = {
-                "viral_title": fallback_title,
-                "optimized_description": fallback_desc,
-                "youtube": fallback_tags,
-                "instagram": fallback_tags,
-                "analysis": f"Generated using deterministic fallback ({fallback_reason}).",
-                "confidence_notes": "FALLBACK",
-                "scheduled_time": "07:30 PM",
-                "raw_result": raw_result,
-                "ai_failed": True,
-                "fallback_reason": fallback_reason,
-                "source_label": "From caption — video analysis unavailable",
-                "analysis_source": "caption_fallback",
-                "video_analyzed": False
-            }
-            
-            job["status"] = "COMPLETED"
-            job["progress"] = 100
-            job["current_step"] = "AI completed with fallback metadata"
-            job["completed_at"] = datetime.now().isoformat()
-            job["result"] = result_payload
-            job["fallback_reason"] = fallback_reason
-            return
-
-        agent = MasterAgent()
-        initial_state = AgentState({
-            "raw_title": title or "",
-            "raw_description": description or "",
-            "transcript_text": video_analysis.get("audio_transcript") or description or "",
-            "audio_transcript": video_analysis.get("audio_transcript") or "",
-            "visual_description": video_analysis.get("visual_description") or "",
-            "analysis_source": video_analysis.get("analysis_source") or "caption_fallback",
-            "source_label": video_analysis.get("source_label") or "From caption — video analysis unavailable",
-            "video_analyzed": video_analysis.get("video_analyzed", False),
-            "url": url or ""
-        })
-        
-        try:
-            final_state = await asyncio.wait_for(
-                asyncio.to_thread(agent.run, initial_state),
-                timeout=120.0
-            )
-        except Exception as e:
-            fallback_reason = f"MasterAgent execution fallback: {e}"
-            logger.warning(f"AI job {job_id} fallback due to: {fallback_reason}")
-            desc_clean = re.sub(r'#\w+', '', description or '').strip()
-            desc_clean = re.split(r'Film Details:|Cast:|Director:|Release Year:|Copyright', desc_clean, flags=re.IGNORECASE)[0].strip()
-            lines = [l.strip() for l in desc_clean.split('\n') if l.strip()]
-            hook_text = lines[1] if len(lines) > 1 and len(lines[0]) < 12 else (lines[0] if lines else '')
-            clean_subject = re.sub(r'[^\w\s]', '', hook_text)[:40].strip()
-            fallback_title = f"Why {clean_subject}... 💔" if clean_subject else "A Moment You Will Never Forget 🥺"
-            guaranteed_fallback_tags = backfill_hashtags([], fallback_title, desc_clean, min_count=7)
-            final_state = AgentState({
-                "metadata": {
-                    "status": "success",
-                    "best_title": fallback_title,
-                    "title_candidates": [{"title": fallback_title, "strategy": "Emotional Retention", "score": 92}],
-                    "viewer_appeal_score": 90,
-                    "title_reason": ["High emotional curiosity hook", "Strong mobile viewer retention"],
-                    "description": f"{hook_text or 'Watch this powerful scene!'}\n\nWhat do you think? Let us know below! 👇\n\n👉 Subscribe for daily shorts!\n#Shorts #Viral",
-                    "youtube_hashtags": guaranteed_fallback_tags,
-                    "instagram_hashtags": guaranteed_fallback_tags,
-                    "ai_failed": True,
-                    "fallback_reason": fallback_reason,
-                    "source_label": "From caption — video analysis unavailable",
-                    "analysis_source": "caption_fallback",
-                    "video_analyzed": False
-                },
-                "posting": {"scheduled_time": "19:30", "score": 95, "reason": "Standard peak evening engagement slot."}
-            })
+        from backend.services.analysis_service import run_video_analysis
+        result_payload = await run_video_analysis(
+            video_url=url,
+            raw_title=title,
+            raw_description=description,
+            video_path=video_path,
+            progress_callback=_update_progress
+        )
 
         if job.get("status") == "CANCELLED":
             return
-            
-        metadata = final_state.get("metadata", {})
-        posting = final_state.get("posting", {})
-        analytics = final_state.get("analytics", {})
-        
-        best_title = metadata.get("best_title") or title or "Untitled Reel"
-        desc = metadata.get("description") or description or ""
-        raw_yt = metadata.get("youtube_hashtags", [])
-        raw_ig = metadata.get("instagram_hashtags", [])
-        youtube_tags = backfill_hashtags(raw_yt, best_title, desc, min_count=7)
-        instagram_tags = backfill_hashtags(raw_ig, best_title, desc, min_count=7)
-        ai_failed = metadata.get("ai_failed", False) or metadata.get("status") == "failed"
-        
-        source_label = metadata.get("source_label") or video_analysis.get("source_label") or "From caption — video analysis unavailable"
-        analysis_source = metadata.get("analysis_source") or video_analysis.get("analysis_source") or "caption_fallback"
-        video_analyzed = metadata.get("video_analyzed", False) or video_analysis.get("video_analyzed", False)
-        
-        raw_result = {
-            "title": best_title,
-            "description": desc,
-            "youtube_hashtags": youtube_tags,
-            "instagram_hashtags": instagram_tags,
-            "title_candidates": metadata.get("title_candidates", [{"title": best_title, "strategy": "High-CTR Algorithm Hook", "score": 95}]),
-            "viewer_appeal_score": metadata.get("viewer_appeal_score", 90),
-            "title_reason": metadata.get("title_reason", ["High viral hook potential", "Optimized search query"]),
-            "posting_recommendation": posting,
-            "ai_failed": ai_failed,
-            "fallback_reason": fallback_reason or metadata.get("fallback_reason"),
-            "source_label": source_label,
-            "analysis_source": analysis_source,
-            "video_analyzed": video_analyzed,
-            "visual_description": video_analysis.get("visual_description", ""),
-            "audio_transcript": video_analysis.get("audio_transcript", ""),
-            "vision_hint": video_analysis.get("vision_hint"),
-            "agent_workflow_state": final_state.data if hasattr(final_state, "data") else final_state
-        }
-        
-        result_payload = {
-            "viral_title": best_title,
-            "optimized_description": desc,
-            "youtube": youtube_tags,
-            "instagram": instagram_tags,
-            "analysis": analytics.get("reasoning", posting.get("reason", "Optimized based on audience peak activity.")),
-            "confidence_notes": posting.get("confidence", "HIGH"),
-            "scheduled_time": posting.get("human_readable_time", "07:30 PM"),
-            "raw_result": raw_result,
-            "ai_failed": ai_failed,
-            "fallback_reason": fallback_reason or metadata.get("fallback_reason"),
-            "source_label": source_label,
-            "analysis_source": analysis_source,
-            "video_analyzed": video_analyzed,
-            "vision_hint": video_analysis.get("vision_hint")
-        }
-        
+
+        result_payload["processed_by"] = "local"
         job["status"] = "COMPLETED"
         job["progress"] = 100
         job["current_step"] = "AI optimization complete"
         job["completed_at"] = datetime.now().isoformat()
         job["result"] = result_payload
-        job["fallback_reason"] = fallback_reason or metadata.get("fallback_reason")
-        
+        job["fallback_reason"] = result_payload.get("fallback_reason")
+
         if content_hash:
             AI_CACHE_STORE[content_hash] = result_payload
-            
+
     except Exception as e:
         fallback_reason = f"AI job execution error: {e}"
         logger.warning(f"AI job {job_id} error: {fallback_reason}. Falling back to instant metadata.")
@@ -969,7 +680,8 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
             "fallback_reason": fallback_reason,
             "source_label": "From caption — video analysis unavailable",
             "analysis_source": "caption_fallback",
-            "video_analyzed": False
+            "video_analyzed": False,
+            "processed_by": "local"
         }
         
         job["status"] = "COMPLETED"
@@ -978,6 +690,59 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         job["completed_at"] = datetime.now().isoformat()
         job["result"] = result_payload
         job["fallback_reason"] = fallback_reason
+
+def dispatch_github_actions_analysis(job_id: str, video_url: str, title: str, description: str, content_hash: str = "") -> bool:
+    """
+    Fires repository_dispatch event to trigger GitHub Actions analyze_video.yml workflow.
+    """
+    token = os.getenv("GITHUB_DISPATCH_TOKEN", "").strip()
+    if not token:
+        raise EnvironmentError(
+            "ANALYSIS_OFFLOAD_MODE is set to 'github_actions' but GITHUB_DISPATCH_TOKEN is missing or empty."
+        )
+
+    repo = os.getenv("GITHUB_REPOSITORY", "Bhuma005/ReelMob").strip()
+    url = f"https://api.github.com/repos/{repo}/dispatches"
+
+    payload = {
+        "event_type": "analyze-video",
+        "client_payload": {
+            "job_id": job_id,
+            "video_url": video_url,
+            "title": title,
+            "description": description,
+            "content_hash": content_hash
+        }
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "ReelsMob-Backend"
+        },
+        method="POST"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status in (200, 204):
+                logger.info(f"✅ Successfully dispatched GitHub Actions analysis for job {job_id} on {repo}")
+                return True
+            logger.warning(f"Unexpected status from GitHub dispatch: {resp.status}")
+            return False
+    except urllib.error.HTTPError as he:
+        err_msg = he.read().decode("utf-8", errors="ignore")
+        logger.error(f"Failed to dispatch GitHub Actions ({he.code}): {err_msg}")
+        raise RuntimeError(f"GitHub Actions dispatch error ({he.code}): {err_msg}") from he
+    except Exception as e:
+        logger.error(f"GitHub dispatch connection error: {e}")
+        raise
+
 
 @app.post("/metadata/analyze", summary="Analyze via Local GenAI (Async Job)")
 @app.post("/api/analyze", summary="Analyze via Local GenAI (Async Job)")
@@ -1011,7 +776,61 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
             "result": AI_CACHE_STORE[content_hash],
             "cached": True
         }
-        
+
+    offload_mode = os.getenv("ANALYSIS_OFFLOAD_MODE", "local").strip().lower()
+
+    # ── Path A: Offload to GitHub Actions (2-CPU Runner) ──────────────────────
+    if offload_mode == "github_actions":
+        validate_offload_config()
+        job_id = str(uuid.uuid4())
+
+        initial_step = "Starting analysis worker on GitHub Actions (2 CPU)..."
+        AI_JOBS_STORE[job_id] = {
+            "job_id": job_id,
+            "status": "QUEUED",
+            "progress": 5,
+            "current_step": initial_step,
+            "created_at": datetime.now().isoformat(),
+            "content_hash": content_hash,
+            "result": None,
+            "error": None,
+            "offloaded": True
+        }
+
+        # Seed record in Supabase so polling endpoint immediately finds it
+        try:
+            from cloud.cloud_auth import get_supabase_client
+            sb = get_supabase_client()
+            sb.table("ai_analysis_jobs").insert({
+                "id": job_id,
+                "source_url": req.url or "",
+                "content_hash": content_hash,
+                "status": "QUEUED",
+                "progress": 5,
+                "current_step": initial_step
+            }).execute()
+        except Exception as sbe:
+            logger.warning(f"Could not seed initial job in Supabase: {sbe}")
+
+        # Dispatch event to GitHub repository
+        await asyncio.to_thread(
+            dispatch_github_actions_analysis,
+            job_id=job_id,
+            video_url=req.url or "",
+            title=req.title or "",
+            description=req.description or "",
+            content_hash=content_hash
+        )
+
+        return {
+            "job_id": job_id,
+            "status": "QUEUED",
+            "progress": 5,
+            "current_step": initial_step,
+            "processed_by": "github_actions"
+        }
+
+    # ── Path B: Local Processing (Background Task) ────────────────────────────
     job_id = f"ai_{uuid.uuid4().hex[:8]}"
     AI_JOBS_STORE[job_id] = {
         "job_id": job_id,
@@ -1024,7 +843,6 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
         "error": None
     }
     
-    # 2. Dispatch real analysis pipeline into background thread
     background_tasks.add_task(
         execute_ai_analysis_job,
         job_id=job_id,
@@ -1039,30 +857,81 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
         "job_id": job_id,
         "status": "QUEUED",
         "progress": 10,
-        "current_step": "Queued for processing"
+        "current_step": "Queued for processing",
+        "processed_by": "local"
     }
+
 
 @app.get("/api/analyze/status/{job_id}", summary="Get AI Analysis Job Status")
 async def get_ai_job_status(job_id: str):
     clean_job_id = sanitize_filename_or_id(job_id)
     job = AI_JOBS_STORE.get(clean_job_id)
-    if not job:
-        if clean_job_id.startswith("cached_"):
-            return {"job_id": clean_job_id, "status": "COMPLETED", "progress": 100, "current_step": "Complete", "result": None}
-        raise HTTPException(status_code=404, detail="AI job not found")
 
-    res = job.get("result") or {}
-    fallback_reason = res.get("fallback_reason") if isinstance(res, dict) else None
+    # 1. If job is local and finished, return it immediately
+    if job and job.get("status") == "COMPLETED":
+        res = job.get("result") or {}
+        fallback_reason = res.get("fallback_reason") if isinstance(res, dict) else None
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "progress": job["progress"],
+            "current_step": job["current_step"],
+            "result": job.get("result"),
+            "error": job.get("error"),
+            "fallback_reason": fallback_reason or job.get("fallback_reason"),
+            "processed_by": res.get("processed_by") or "local"
+        }
 
-    return {
-        "job_id": job["job_id"],
-        "status": job["status"],
-        "progress": job["progress"],
-        "current_step": job["current_step"],
-        "result": job.get("result"),
-        "error": job.get("error"),
-        "fallback_reason": fallback_reason or job.get("fallback_reason")
-    }
+    # 2. Check Supabase ai_analysis_jobs (used for GitHub Actions offload and restart persistence)
+    try:
+        from cloud.cloud_auth import get_supabase_client
+        sb = get_supabase_client()
+        res = sb.table("ai_analysis_jobs").select("*").eq("id", clean_job_id).execute()
+        if res and res.data:
+            row = res.data[0]
+            res_payload = row.get("result") or {}
+            fb_reason = res_payload.get("fallback_reason") if isinstance(res_payload, dict) else None
+            processed_by = res_payload.get("processed_by") or ("github_actions" if row.get("status") == "COMPLETED" else None)
+
+            # Sync in-memory store if present
+            if clean_job_id in AI_JOBS_STORE and row.get("status") == "COMPLETED":
+                AI_JOBS_STORE[clean_job_id]["status"] = "COMPLETED"
+                AI_JOBS_STORE[clean_job_id]["progress"] = 100
+                AI_JOBS_STORE[clean_job_id]["current_step"] = row.get("current_step", "AI optimization complete")
+                AI_JOBS_STORE[clean_job_id]["result"] = res_payload
+
+            return {
+                "job_id": str(row["id"]),
+                "status": row.get("status", "QUEUED"),
+                "progress": row.get("progress", 0),
+                "current_step": row.get("current_step", "Processing..."),
+                "result": res_payload if row.get("status") == "COMPLETED" else None,
+                "error": row.get("error_message"),
+                "fallback_reason": fb_reason,
+                "processed_by": processed_by
+            }
+    except Exception as sbe:
+        logger.debug(f"Could not query Supabase for job status: {sbe}")
+
+    # 3. Fallback to in-memory store if still pending or in progress locally
+    if job:
+        res = job.get("result") or {}
+        fallback_reason = res.get("fallback_reason") if isinstance(res, dict) else None
+        return {
+            "job_id": job["job_id"],
+            "status": job["status"],
+            "progress": job["progress"],
+            "current_step": job["current_step"],
+            "result": job.get("result"),
+            "error": job.get("error"),
+            "fallback_reason": fallback_reason or job.get("fallback_reason"),
+            "processed_by": "local"
+        }
+
+    if clean_job_id.startswith("cached_"):
+        return {"job_id": clean_job_id, "status": "COMPLETED", "progress": 100, "current_step": "Complete", "result": None}
+
+    raise HTTPException(status_code=404, detail="AI job not found")
 
 @app.post("/api/analyze/cancel/{job_id}", summary="Cancel AI Analysis Job")
 async def cancel_ai_job(job_id: str):
