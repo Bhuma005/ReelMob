@@ -39,8 +39,8 @@ def get_groq_api_key() -> str:
 def get_gemini_model() -> str:
     """Returns valid Gemini model ID, normalizing non-existent/legacy identifiers."""
     raw = (os.getenv('GEMINI_MODEL') or '').strip().strip("'\"")
-    if not raw or raw in ('gemini-3.6-flash', 'gemini-flash', 'gemini'):
-        return 'gemini-2.0-flash'
+    if not raw or raw in ('gemini-2.0-flash', 'gemini-2.5-flash', 'gemini-flash', 'gemini'):
+        return 'gemini-3.6-flash'
     return raw
 
 
@@ -286,40 +286,50 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
         except Exception as e:
             logger.warning(f'Failed to process frame: {e}')
 
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}'
-    payload = json.dumps({'contents': [{'parts': parts}]}).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
+    models_to_try = [gemini_model]
+    if 'gemini-3-flash-preview' not in models_to_try:
+        models_to_try.append('gemini-3-flash-preview')
 
     from backend.retry import sync_retry
 
-    def _execute():
-        try:
-            with urllib.request.urlopen(req, timeout=25) as resp:
-                return json.loads(resp.read().decode('utf-8'))
-        except urllib.error.HTTPError as he:
-            try:
-                err_text = he.read().decode('utf-8', errors='ignore')
-            except Exception:
-                err_text = str(he)
-            raise RuntimeError(f"Gemini API error ({he.code}): {err_text}") from he
+    last_err = None
+    for model_name in models_to_try:
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}'
+        payload = json.dumps({'contents': [{'parts': parts}]}).encode('utf-8')
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
 
-    try:
-        data = sync_retry(_execute, max_retries=3, operation_name="gemini_vision")
-        raw_text = data['candidates'][0]['content']['parts'][0]['text']
-        logger.info(f'Gemini visual analysis completed using {gemini_model} ({len(raw_text)} chars)')
-        return {
-            'visual_summary': raw_text.strip(),
-            'model': gemini_model,
-            'success': True
-        }
-    except Exception as e:
-        logger.error(f'Gemini vision request failed ({gemini_model}): {e}')
-        return {
-            'visual_summary': caption or 'A short video scene',
-            'model': gemini_model,
-            'success': False,
-            'error': str(e)
-        }
+        def _execute():
+            try:
+                with urllib.request.urlopen(req, timeout=25) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
+            except urllib.error.HTTPError as he:
+                try:
+                    err_text = he.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    err_text = str(he)
+                raise RuntimeError(f"Gemini API error ({he.code}): {err_text}") from he
+
+        try:
+            data = sync_retry(_execute, max_retries=2, operation_name=f"gemini_vision_{model_name}")
+            raw_text = data['candidates'][0]['content']['parts'][0]['text']
+            logger.info(f'Gemini visual analysis completed using {model_name} ({len(raw_text)} chars)')
+            return {
+                'visual_summary': raw_text.strip(),
+                'model': model_name,
+                'success': True
+            }
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini vision request failed on {model_name}: {e}")
+            continue
+
+    logger.error(f'Gemini vision request failed ({gemini_model}): {last_err}')
+    return {
+        'visual_summary': caption or 'A short video scene',
+        'model': gemini_model,
+        'success': False,
+        'error': str(last_err)
+    }
 
 
 VIRAL_METADATA_SYSTEM_PROMPT = (
@@ -406,7 +416,10 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
         return {'success': False, 'error': 'GEMINI_API_KEY not configured'}
 
     gemini_model = get_gemini_model()
-    url = f'https://generativelanguage.googleapis.com/v1beta/models/{gemini_model}:generateContent?key={gemini_key}'
+    models_to_try = [gemini_model]
+    if 'gemini-3-flash-preview' not in models_to_try:
+        models_to_try.append('gemini-3-flash-preview')
+
     prompt = (
         f"{VIRAL_METADATA_SYSTEM_PROMPT}\n\n"
         f"Visual analysis from video:\n{visual_summary}\n\n"
@@ -417,40 +430,49 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
         'contents': [{'parts': [{'text': prompt}]}],
         'generationConfig': {'responseMimeType': 'application/json', 'temperature': 0.7}
     }).encode('utf-8')
-    req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
+
     from backend.retry import sync_retry
 
-    def _call_gemini_meta():
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode('utf-8'))
-        except urllib.error.HTTPError as he:
-            try:
-                err_text = he.read().decode('utf-8', errors='ignore')
-            except Exception:
-                err_text = str(he)
-            raise RuntimeError(f"Gemini metadata API error ({he.code}): {err_text}") from he
+    last_err = None
+    for model_name in models_to_try:
+        url = f'https://generativelanguage.googleapis.com/v1beta/models/{model_name}:generateContent?key={gemini_key}'
+        req = urllib.request.Request(url, data=payload, headers={'Content-Type': 'application/json', 'User-Agent': STANDARD_USER_AGENT})
 
-    try:
-        data = sync_retry(_call_gemini_meta, max_retries=3, operation_name="gemini_metadata")
-        raw = data['candidates'][0]['content']['parts'][0]['text']
-        parsed = json.loads(raw)
-        title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
-        yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
-        ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
-        all_tags = list(dict.fromkeys(yt_tags + ig_tags))
-        return {
-            'title': title,
-            'description': parsed.get('description', visual_summary[:250]),
-            'youtube_hashtags': yt_tags[:15],
-            'instagram_hashtags': ig_tags[:30],
-            'hashtags': all_tags[:25],
-            'model': gemini_model,
-            'success': True
-        }
-    except Exception as e:
-        logger.error(f'Gemini metadata fallback failed ({gemini_model}): {e}')
-        return {'success': False, 'error': str(e)}
+        def _call_gemini_meta():
+            try:
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
+            except urllib.error.HTTPError as he:
+                try:
+                    err_text = he.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    err_text = str(he)
+                raise RuntimeError(f"Gemini metadata API error ({he.code}): {err_text}") from he
+
+        try:
+            data = sync_retry(_call_gemini_meta, max_retries=2, operation_name=f"gemini_metadata_{model_name}")
+            raw = data['candidates'][0]['content']['parts'][0]['text']
+            parsed = json.loads(raw)
+            title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
+            yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
+            ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
+            all_tags = list(dict.fromkeys(yt_tags + ig_tags))
+            return {
+                'title': title,
+                'description': parsed.get('description', visual_summary[:250]),
+                'youtube_hashtags': yt_tags[:15],
+                'instagram_hashtags': ig_tags[:30],
+                'hashtags': all_tags[:25],
+                'model': model_name,
+                'success': True
+            }
+        except Exception as e:
+            last_err = e
+            logger.warning(f"Gemini metadata attempt failed on {model_name}: {e}")
+            continue
+
+    logger.error(f'Gemini metadata fallback failed ({gemini_model}): {last_err}')
+    return {'success': False, 'error': str(last_err)}
 
 
 def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[str, Any]:
@@ -483,84 +505,97 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
         user_prompt += f'Caption context: {caption}\n\n'
     user_prompt += 'Generate the viral JSON metadata now.'
 
-    payload = json.dumps({
-        'model': groq_model,
-        'messages': [
-            {'role': 'system', 'content': VIRAL_METADATA_SYSTEM_PROMPT},
-            {'role': 'user', 'content': user_prompt}
-        ],
-        'response_format': {'type': 'json_object'},
-        'temperature': 0.7,
-        'max_tokens': 1000
-    }).encode('utf-8')
-
-    req = urllib.request.Request(
-        'https://api.groq.com/openai/v1/chat/completions',
-        data=payload,
-        headers={
-            'Authorization': f'Bearer {groq_key}',
-            'Content-Type': 'application/json',
-            'User-Agent': STANDARD_USER_AGENT
-        }
-    )
+    models_to_try = [groq_model]
+    if 'qwen/qwen3.8-27b' not in models_to_try:
+        models_to_try.append('qwen/qwen3.8-27b')
 
     from backend.retry import sync_retry
 
-    def _call_groq():
-        try:
-            with urllib.request.urlopen(req, timeout=15) as resp:
-                return json.loads(resp.read().decode('utf-8'))
-        except urllib.error.HTTPError as he:
+    last_groq_error = None
+    for model_name in models_to_try:
+        payload_dict = {
+            'model': model_name,
+            'messages': [
+                {'role': 'system', 'content': VIRAL_METADATA_SYSTEM_PROMPT},
+                {'role': 'user', 'content': user_prompt}
+            ],
+            'response_format': {'type': 'json_object'},
+            'temperature': 0.7,
+            'max_tokens': 4096
+        }
+        if 'gpt-oss' in model_name:
+            payload_dict['reasoning_effort'] = 'low'
+
+        payload = json.dumps(payload_dict).encode('utf-8')
+        req = urllib.request.Request(
+            'https://api.groq.com/openai/v1/chat/completions',
+            data=payload,
+            headers={
+                'Authorization': f'Bearer {groq_key}',
+                'Content-Type': 'application/json',
+                'User-Agent': STANDARD_USER_AGENT
+            }
+        )
+
+        def _call_groq():
             try:
-                err_text = he.read().decode('utf-8', errors='ignore')
-            except Exception:
-                err_text = str(he)
-            raise RuntimeError(f"Groq API error ({he.code}): {err_text}") from he
+                with urllib.request.urlopen(req, timeout=15) as resp:
+                    return json.loads(resp.read().decode('utf-8'))
+            except urllib.error.HTTPError as he:
+                try:
+                    err_text = he.read().decode('utf-8', errors='ignore')
+                except Exception:
+                    err_text = str(he)
+                raise RuntimeError(f"Groq API error ({he.code}): {err_text}") from he
 
-    try:
-        data = sync_retry(_call_groq, max_retries=3, operation_name="groq_metadata")
-        content = data['choices'][0]['message']['content'].strip()
-        
-        # Extract JSON block
-        match = re.search(r'\{.*\}', content, re.DOTALL)
-        if match:
-            content = match.group(0)
+        try:
+            data = sync_retry(_call_groq, max_retries=2, operation_name=f"groq_metadata_{model_name.replace('/', '_')}")
+            content = data['choices'][0]['message']['content'].strip()
+            
+            # Extract JSON block
+            match = re.search(r'\{.*\}', content, re.DOTALL)
+            if match:
+                content = match.group(0)
 
-        parsed = json.loads(content)
-        title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
-        yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
-        ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
-        all_tags = list(dict.fromkeys(yt_tags + ig_tags))
+            parsed = json.loads(content)
+            title = _enforce_title_length(parsed.get('title', 'Wait Until You See This 🎬'))
+            yt_tags = _format_tags(parsed.get('youtube_hashtags', []), ['#Shorts', '#ShortsFeed', '#Viral'])
+            ig_tags = _format_tags(parsed.get('instagram_hashtags', []), ['#Reels', '#ExplorePage'])
+            all_tags = list(dict.fromkeys(yt_tags + ig_tags))
 
-        return {
-            'title': title,
-            'description': parsed.get('description', visual_summary[:250]),
-            'youtube_hashtags': yt_tags[:15],
-            'instagram_hashtags': ig_tags[:30],
-            'hashtags': all_tags[:25],
-            'model': groq_model,
-            'success': True
-        }
-    except Exception as e:
-        logger.warning(f'Groq generation error ({groq_model}): {e}, falling back to Gemini...')
-        # Try Gemini fallback
-        gemini_fallback = generate_metadata_with_gemini(visual_summary, caption=caption)
-        if gemini_fallback.get('success'):
-            gemini_fallback['fallback_reason'] = f'groq_failed_used_gemini: {e}'
-            return gemini_fallback
+            return {
+                'title': title,
+                'description': parsed.get('description', visual_summary[:250]),
+                'youtube_hashtags': yt_tags[:15],
+                'instagram_hashtags': ig_tags[:30],
+                'hashtags': all_tags[:25],
+                'model': model_name,
+                'success': True
+            }
+        except Exception as e:
+            last_groq_error = e
+            logger.warning(f"Groq generation attempt with {model_name} failed: {e}")
+            continue
 
-        fallback_tags = ['#Shorts', '#ShortsFeed', '#Viral', '#Trending', '#MovieClips', '#Cinema', '#MustWatch']
-        gemini_err = gemini_fallback.get('error', 'unavailable')
-        return {
-            'title': 'Wait Until You See This 🎬',
-            'description': visual_summary[:250] if visual_summary else 'Watch this incredible scene unfold.',
-            'youtube_hashtags': fallback_tags,
-            'instagram_hashtags': fallback_tags + ['#Reels', '#ExplorePage'],
-            'hashtags': fallback_tags,
-            'success': False,
-            'error': f'Groq error: {e}. Gemini fallback error: {gemini_err}',
-            'fallback_reason': f'groq_error: {e}'
-        }
+    logger.warning(f'Groq generation error ({groq_model}): {last_groq_error}, falling back to Gemini...')
+    # Try Gemini fallback
+    gemini_fallback = generate_metadata_with_gemini(visual_summary, caption=caption)
+    if gemini_fallback.get('success'):
+        gemini_fallback['fallback_reason'] = f'groq_failed_used_gemini: {last_groq_error}'
+        return gemini_fallback
+
+    fallback_tags = ['#Shorts', '#ShortsFeed', '#Viral', '#Trending', '#MovieClips', '#Cinema', '#MustWatch']
+    gemini_err = gemini_fallback.get('error', 'unavailable')
+    return {
+        'title': 'Wait Until You See This 🎬',
+        'description': visual_summary[:250] if visual_summary else 'Watch this incredible scene unfold.',
+        'youtube_hashtags': fallback_tags,
+        'instagram_hashtags': fallback_tags + ['#Reels', '#ExplorePage'],
+        'hashtags': fallback_tags,
+        'success': False,
+        'error': f'Groq error: {last_groq_error}. Gemini fallback error: {gemini_err}',
+        'fallback_reason': f'groq_error: {last_groq_error}'
+    }
 
 
 def run_cloud_pipeline(frame_paths: List[str], caption: str = '') -> Dict[str, Any]:

@@ -45,7 +45,7 @@ class TestModelConfigurationAndNormalization:
         monkeypatch.delenv("GROQ_MODEL", raising=False)
         monkeypatch.delenv("GEMINI_MODEL", raising=False)
         assert get_groq_model() == "openai/gpt-oss-120b"
-        assert get_gemini_model() == "gemini-2.0-flash"
+        assert get_gemini_model() == "gemini-3.6-flash"
 
     def test_groq_deprecated_model_normalization(self, monkeypatch):
         # The decommissioned llama-3.3-70b-versatile model must automatically normalize
@@ -61,8 +61,8 @@ class TestModelConfigurationAndNormalization:
         assert get_groq_model() == "llama-3.1-8b-instant"
 
     def test_gemini_model_normalization(self, monkeypatch):
-        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
-        assert get_gemini_model() == "gemini-2.0-flash"
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+        assert get_gemini_model() == "gemini-3.6-flash"
 
         monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-pro")
         assert get_gemini_model() == "gemini-1.5-pro"
@@ -175,11 +175,11 @@ class TestGeminiModelSelfCheck:
 
     def test_gemini_configured_model_found(self, monkeypatch):
         monkeypatch.setenv("GEMINI_API_KEY", "ai_gemini_test")
-        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
 
         mock_payload = {
             "models": [
-                {"name": "models/gemini-2.0-flash", "displayName": "Gemini 2.0 Flash"},
+                {"name": "models/gemini-3.6-flash", "displayName": "Gemini 3.6 Flash"},
                 {"name": "models/gemini-1.5-pro", "displayName": "Gemini 1.5 Pro"}
             ]
         }
@@ -215,7 +215,7 @@ class TestStartupSelfCheckAndHealthSurfacing:
         monkeypatch.setenv("GROQ_API_KEY", "gsk_test123")
 
         mock_groq_status = {"valid": True, "status": "active", "model": "openai/gpt-oss-120b"}
-        mock_gemini_status = {"valid": True, "status": "active", "model": "gemini-2.0-flash"}
+        mock_gemini_status = {"valid": True, "status": "active", "model": "gemini-3.6-flash"}
 
         with patch("backend.services.cloud_ai.verify_groq_model_active", return_value=mock_groq_status), \
              patch("backend.services.cloud_ai.verify_gemini_model_active", return_value=mock_gemini_status):
@@ -233,10 +233,10 @@ class TestStartupSelfCheckAndHealthSurfacing:
         monkeypatch.setenv("GEMINI_API_KEY", "ai_gemini_test")
         monkeypatch.setenv("GROQ_API_KEY", "gsk_test123")
         monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b")
-        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
 
         mock_groq_warning = {"valid": False, "status": "missing", "model": "openai/gpt-oss-120b"}
-        mock_gemini_ok = {"valid": True, "status": "active", "model": "gemini-2.0-flash"}
+        mock_gemini_ok = {"valid": True, "status": "active", "model": "gemini-3.6-flash"}
 
         with patch("backend.services.cloud_ai.verify_groq_model_active", return_value=mock_groq_warning), \
              patch("backend.services.cloud_ai.verify_gemini_model_active", return_value=mock_gemini_ok):
@@ -248,3 +248,44 @@ class TestStartupSelfCheckAndHealthSurfacing:
         assert data["status"] == "model_warning"
         assert "openai/gpt-oss-120b (metadata)" in data["models"]
         assert data["model_status"]["groq"]["valid"] is False
+
+
+class TestGroqTokenLimitAndFallbackResilience:
+    """Verify Groq token limits and model fallback resilience."""
+
+    def test_groq_payload_max_tokens_and_reasoning_effort(self, monkeypatch):
+        from backend.services.cloud_ai import generate_metadata_with_groq
+
+        monkeypatch.setenv("GROQ_API_KEY", "gsk_test123")
+        monkeypatch.setenv("GROQ_MODEL", "openai/gpt-oss-120b")
+
+        captured_requests = []
+
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps({
+            "choices": [{
+                "message": {
+                    "content": json.dumps({
+                        "title": "Dramatic Night Escape 🎬",
+                        "description": "Heart-pounding scene unfold.",
+                        "youtube_hashtags": ["#Shorts", "#Viral"],
+                        "instagram_hashtags": ["#Reels"]
+                    })
+                }
+            }]
+        }).encode("utf-8")
+        mock_resp.__enter__.return_value = mock_resp
+
+        def fake_urlopen(req, *args, **kwargs):
+            captured_requests.append(req)
+            return mock_resp
+
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            res = generate_metadata_with_groq("High speed pursuit")
+            assert res["success"] is True
+
+        assert len(captured_requests) > 0
+        body = json.loads(captured_requests[0].data.decode("utf-8"))
+        assert body["max_tokens"] >= 4096
+        assert body.get("reasoning_effort") == "low"
+        assert body["model"] == "openai/gpt-oss-120b"
