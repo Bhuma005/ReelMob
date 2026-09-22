@@ -124,10 +124,33 @@ async def request_context_middleware(request: Request, call_next):
         request_id_ctx_var.reset(token)
 
 
+def get_client_ip(request: Request) -> str:
+    """Extract real client IP considering reverse proxy headers (Render, Cloudflare, ALB)."""
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    x_real_ip = request.headers.get("x-real-ip")
+    if x_real_ip:
+        return x_real_ip.strip()
+    if request.client:
+        return request.client.host
+    return "unknown"
+
+
 # Middleware 2: IP-based sliding-window Rate Limiting
 @app.middleware("http")
 async def rate_limit_middleware(request: Request, call_next):
-    client_ip = request.client.host if request.client else "unknown"
+    path = request.url.path
+
+    # Exempt static assets and frontend SPA routes from consuming API rate limit quota
+    if (
+        path.startswith("/assets/")
+        or path.endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".json", ".map"))
+        or (not path.startswith("/api") and path not in ("/automate", "/metadata", "/formats", "/download", "/download-thumbnail", "/auth"))
+    ):
+        return await call_next(request)
+
+    client_ip = get_client_ip(request)
     now = time.time()
 
     history = RATE_LIMIT_STORE.get(client_ip, [])

@@ -177,7 +177,7 @@ export default function CreateReelPage() {
         } catch (e) {
           console.warn("Poll highlight error:", e);
         }
-      }, 1500);
+      }, 3000);
     } catch (err) {
       if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
       setIsDetectingHighlights(false);
@@ -264,7 +264,7 @@ export default function CreateReelPage() {
         } catch (pollErr) {
           console.debug("Moderation poll error:", pollErr);
         }
-      }, 1500);
+      }, 3000);
     } catch (e) {
       console.debug("Moderation check skipped or errored:", e);
       if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
@@ -363,7 +363,7 @@ export default function CreateReelPage() {
         } catch (pollErr) {
           console.warn("Polling error:", pollErr);
         }
-      }, 1500);
+      }, 3000);
 
     } catch (err) {
       console.error(err);

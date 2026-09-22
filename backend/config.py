@@ -28,7 +28,7 @@ DOWNLOAD_DIR = os.path.join(ROOT_DIR, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Rate Limiting
-RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "10"))
+RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "30"))
 RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "1.0"))
 
 # Request Timeouts

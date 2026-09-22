@@ -7,6 +7,7 @@ from unittest.mock import patch, MagicMock
 import pytest
 from fastapi.testclient import TestClient
 from backend.main import app, RATE_LIMIT_STORE
+from backend.config import RATE_LIMIT_BURST
 
 
 @pytest.fixture
@@ -181,8 +182,8 @@ class TestRateLimiter:
 
     def test_burst_rate_limit(self, client):
         RATE_LIMIT_STORE.clear()
-        # Burst 10 requests rapidly
-        responses = [client.get("/api/health") for _ in range(12)]
+        # Burst requests rapidly exceeding RATE_LIMIT_BURST
+        responses = [client.get("/api/health") for _ in range(RATE_LIMIT_BURST + 2)]
         status_codes = [r.status_code for r in responses]
         # At least one 429 should occur
         assert 429 in status_codes
@@ -190,6 +191,13 @@ class TestRateLimiter:
         idx_429 = status_codes.index(429)
         res_429 = responses[idx_429].json()
         assert "Too many requests" in res_429["detail"]
+
+    def test_static_assets_exempt_from_rate_limit(self, client):
+        RATE_LIMIT_STORE.clear()
+        # Non-API static assets should not increment RATE_LIMIT_STORE
+        responses = [client.get("/assets/vendor-react-Ce66LIeu.js") for _ in range(RATE_LIMIT_BURST + 5)]
+        # None should be 429
+        assert all(r.status_code != 429 for r in responses)
 
 
 class TestAIAnalysisFallback:
