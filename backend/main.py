@@ -69,6 +69,13 @@ validate_config(fail_fast=False)
 from backend.config import validate_offload_config
 validate_offload_config()
 
+# Startup AI model validation check (lightweight active-model verification)
+try:
+    from backend.services.cloud_ai import run_startup_model_self_check
+    run_startup_model_self_check()
+except Exception as _startup_e:
+    logger.warning(f"Startup AI model self-check skipped or failed: {_startup_e}")
+
 APP_START_TIME = time.time()
 app = FastAPI(title=APP_NAME, version="2.0.0")
 
@@ -1912,12 +1919,32 @@ async def health_check_detailed():
     # 3. AI Service status & latency
     t0 = time.perf_counter()
     try:
-        from backend.services.cloud_ai import is_cloud_ai_available
+        from backend.services.cloud_ai import (
+            is_cloud_ai_available,
+            verify_groq_model_active,
+            verify_gemini_model_active,
+            get_gemini_model,
+            get_groq_model,
+        )
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
+        groq_model_check = verify_groq_model_active()
+        gemini_model_check = verify_gemini_model_active()
+
+        ai_status = "ok" if is_cloud_ai_available() else "info"
         if is_cloud_ai_available():
-            dependencies["ai"] = {"status": "ok", "latency_ms": latency_ms, "provider": "ReelsMob Cloud AI (Gemini + Groq)"}
-        else:
-            dependencies["ai"] = {"status": "info", "latency_ms": latency_ms, "provider": "Deterministic Fallback (Cloud AI unconfigured)"}
+            if groq_model_check.get("valid") is False or gemini_model_check.get("valid") is False:
+                ai_status = "warning"
+                overall_healthy = False
+
+        dependencies["ai"] = {
+            "status": ai_status,
+            "latency_ms": latency_ms,
+            "provider": f"ReelsMob Cloud AI ({get_gemini_model()} + {get_groq_model()})" if is_cloud_ai_available() else "Deterministic Fallback (Cloud AI unconfigured)",
+            "models": {
+                "groq": groq_model_check,
+                "gemini": gemini_model_check
+            }
+        }
     except Exception as e:
         latency_ms = round((time.perf_counter() - t0) * 1000.0, 2)
         dependencies["ai"] = {"status": "offline", "latency_ms": latency_ms, "provider": "deterministic_fallback", "message": str(e)[:60]}
@@ -1965,19 +1992,34 @@ async def health_check_detailed():
 @app.get("/api/health/ai", summary="AI Health Check")
 async def health_check_ai():
     try:
-        from backend.services.cloud_ai import is_cloud_ai_available
+        from backend.services.cloud_ai import (
+            is_cloud_ai_available,
+            get_gemini_model,
+            get_groq_model,
+            verify_groq_model_active,
+            verify_gemini_model_active,
+        )
+        gemini_m = get_gemini_model()
+        groq_m = get_groq_model()
         if is_cloud_ai_available():
+            groq_check = verify_groq_model_active()
+            gemini_check = verify_gemini_model_active()
+            has_warning = (groq_check.get("valid") is False) or (gemini_check.get("valid") is False)
             return {
                 "available": True,
                 "provider": "ReelsMob Cloud AI",
-                "models": ["gemini-3.6-flash (vision)", "groq/compound-mini (metadata)"],
-                "status": "active"
+                "models": [f"{gemini_m} (vision)", f"{groq_m} (metadata)"],
+                "status": "active" if not has_warning else "model_warning",
+                "model_status": {
+                    "groq": groq_check,
+                    "gemini": gemini_check
+                }
             }
         else:
             return {
                 "available": False,
                 "provider": "ReelsMob Cloud AI",
-                "models": ["gemini-3.6-flash (vision)", "groq/compound-mini (metadata)"],
+                "models": [f"{gemini_m} (vision)", f"{groq_m} (metadata)"],
                 "status": "keys_missing",
                 "error": "GEMINI_API_KEY or GROQ_API_KEY not configured in environment",
                 "fallback_enabled": True

@@ -8,11 +8,12 @@ Uses:
 import os
 import re
 import json
+import time
 import base64
 import logging
 import urllib.request
 import urllib.error
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 
 logger = logging.getLogger('reelsmob.cloud_ai')
 
@@ -82,6 +83,157 @@ logger.info(
     f"({get_gemini_model()}), Groq={'CONFIGURED' if get_groq_api_key() else 'MISSING'} "
     f"({get_groq_model()})"
 )
+
+_MODEL_CACHE_TTL_SECONDS = 300.0
+_MODEL_VALIDITY_CACHE: Dict[str, Dict[str, Any]] = {
+    "groq": {"timestamp": 0.0, "data": None},
+    "gemini": {"timestamp": 0.0, "data": None},
+}
+
+
+def verify_groq_model_active(groq_key: Optional[str] = None, model: Optional[str] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Checks if configured Groq model is active via GET https://api.groq.com/openai/v1/models.
+    Cached for 5 minutes unless force_refresh is True.
+    """
+    key = (groq_key or get_groq_api_key()).strip()
+    target_model = (model or get_groq_model()).strip()
+
+    if not key:
+        return {
+            "valid": None,
+            "status": "unconfigured",
+            "model": target_model,
+            "message": "GROQ_API_KEY not configured"
+        }
+
+    now = time.time()
+    cache_entry = _MODEL_VALIDITY_CACHE["groq"]
+    if not force_refresh and cache_entry["data"] and (now - cache_entry["timestamp"] < _MODEL_CACHE_TTL_SECONDS):
+        if cache_entry["data"].get("model") == target_model:
+            return cache_entry["data"]
+
+    url = "https://api.groq.com/openai/v1/models"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "Authorization": f"Bearer {key}",
+            "User-Agent": STANDARD_USER_AGENT,
+            "Accept": "application/json"
+        },
+        method="GET"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("id") for m in data.get("data", []) if isinstance(m, dict)]
+            if target_model in models:
+                res = {
+                    "valid": True,
+                    "status": "active",
+                    "model": target_model,
+                    "message": f"Model '{target_model}' is active on Groq"
+                }
+            else:
+                warning_msg = f"WARNING: configured GROQ_MODEL '{target_model}' not found in Groq's active model list — AI generation will fail until this is fixed."
+                logger.warning(warning_msg)
+                res = {
+                    "valid": False,
+                    "status": "missing",
+                    "model": target_model,
+                    "message": warning_msg
+                }
+    except Exception as exc:
+        logger.warning(f"Groq model verification failed: {exc}")
+        res = {
+            "valid": False,
+            "status": "error",
+            "model": target_model,
+            "message": f"Failed to verify model against Groq API: {str(exc)[:120]}"
+        }
+
+    _MODEL_VALIDITY_CACHE["groq"] = {"timestamp": now, "data": res}
+    return res
+
+
+def verify_gemini_model_active(gemini_key: Optional[str] = None, model: Optional[str] = None, force_refresh: bool = False) -> Dict[str, Any]:
+    """
+    Checks if configured Gemini model is active via GET https://generativelanguage.googleapis.com/v1beta/models.
+    Cached for 5 minutes unless force_refresh is True.
+    """
+    key = (gemini_key or get_gemini_api_key()).strip()
+    target_model = (model or get_gemini_model()).strip()
+
+    if not key:
+        return {
+            "valid": None,
+            "status": "unconfigured",
+            "model": target_model,
+            "message": "GEMINI_API_KEY not configured"
+        }
+
+    now = time.time()
+    cache_entry = _MODEL_VALIDITY_CACHE["gemini"]
+    if not force_refresh and cache_entry["data"] and (now - cache_entry["timestamp"] < _MODEL_CACHE_TTL_SECONDS):
+        if cache_entry["data"].get("model") == target_model:
+            return cache_entry["data"]
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models?key={key}"
+    req = urllib.request.Request(
+        url,
+        headers={
+            "User-Agent": STANDARD_USER_AGENT,
+            "Accept": "application/json"
+        },
+        method="GET"
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=5.0) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            raw_models = [m.get("name", "") for m in data.get("models", []) if isinstance(m, dict)]
+            models = [m.replace("models/", "") for m in raw_models] + raw_models
+            if target_model in models:
+                res = {
+                    "valid": True,
+                    "status": "active",
+                    "model": target_model,
+                    "message": f"Model '{target_model}' is active on Gemini"
+                }
+            else:
+                warning_msg = f"WARNING: configured GEMINI_MODEL '{target_model}' not found in Gemini's active model list."
+                logger.warning(warning_msg)
+                res = {
+                    "valid": False,
+                    "status": "missing",
+                    "model": target_model,
+                    "message": warning_msg
+                }
+    except Exception as exc:
+        logger.warning(f"Gemini model verification failed: {exc}")
+        res = {
+            "valid": False,
+            "status": "error",
+            "model": target_model,
+            "message": f"Failed to verify model against Gemini API: {str(exc)[:120]}"
+        }
+
+    _MODEL_VALIDITY_CACHE["gemini"] = {"timestamp": now, "data": res}
+    return res
+
+
+def run_startup_model_self_check() -> Dict[str, Any]:
+    """
+    Lightweight self-check executed during startup.
+    Confirms active model status for configured keys without blocking or crashing on failure.
+    """
+    results = {}
+    if get_groq_api_key():
+        results["groq"] = verify_groq_model_active(force_refresh=True)
+    if get_gemini_api_key():
+        results["gemini"] = verify_gemini_model_active(force_refresh=True)
+    return results
 
 
 def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dict[str, Any]:
