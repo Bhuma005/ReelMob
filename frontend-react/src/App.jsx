@@ -7,6 +7,8 @@ import { fetchApi } from './api/client';
 import AppLayout from './components/layout/AppLayout';
 
 import { ErrorBoundary } from './components/ErrorBoundary';
+import { VersionUpdateBanner } from './components/VersionUpdateBanner';
+import { clearStaleChunkReloadMarker } from './utils/chunkReload';
 
 const DashboardPage = lazy(() => import('./pages/DashboardPage'));
 const CreateReelPage = lazy(() => import('./pages/CreateReelPage'));
@@ -55,6 +57,13 @@ function AppBootstrapper({ children }) {
         }
       })
       .catch(() => setOllamaStatus('🔴 AI Offline'));
+
+    // Reset stale-chunk reload lock once the app has mounted and stabilized
+    const timer = setTimeout(() => {
+      clearStaleChunkReloadMarker();
+    }, 4000);
+
+    return () => clearTimeout(timer);
   }, [setOllamaStatus, setYtAuth]);
 
   return children;
@@ -66,6 +75,7 @@ export default function App() {
       <QueryClientProvider client={queryClient}>
         <BrowserRouter>
           <AppBootstrapper>
+            <VersionUpdateBanner />
             <Routes>
               <Route path="/" element={<AppLayout />}>
                 <Route index element={<DashboardPage />} />
