@@ -1032,10 +1032,10 @@ export default function CreateReelPage() {
                       </div>
 
                       {/* Live Active Step Badge */}
-                      {store.aiStepMessage && (
+                      {(store.aiStepMessage || store.aiProgress < 20) && (
                         <div className="flex items-center gap-2 text-[11px] font-mono text-accent bg-accent/10 px-3 py-1.5 rounded-md border border-accent/25">
                           <Loader2 className="w-3.5 h-3.5 animate-spin shrink-0 text-accent" />
-                          <span className="truncate font-medium">{store.aiStepMessage}</span>
+                          <span className="truncate font-medium">{store.aiStepMessage || "Starting analysis worker..."}</span>
                         </div>
                       )}
 
@@ -1107,7 +1107,7 @@ export default function CreateReelPage() {
 
                       <div className="pt-3 border-t border-border flex items-center justify-between gap-2">
                         <p className="text-[11px] text-text-muted truncate font-mono">
-                          {store.aiStepMessage || "Processing through model pipeline..."}
+                          {store.aiStepMessage || (store.aiProgress < 20 ? "Starting analysis worker..." : "Processing through model pipeline...")}
                         </p>
                         <div className="flex items-center gap-1.5 shrink-0">
                           <Button 
