@@ -1,4 +1,4 @@
-const CACHE_NAME = 'reelsmob-shell-v1';
+const CACHE_NAME = 'reelsmob-shell-v2';
 const SHELL_ASSETS = [
   '/',
   '/index.html',
@@ -41,6 +41,24 @@ self.addEventListener('fetch', (event) => {
     return;
   }
 
+  // Network-First for navigation requests to ensure newly deployed index.html is loaded immediately
+  const isNavigation = event.request.mode === 'navigate' || url.pathname === '/' || url.pathname === '/index.html';
+  if (isNavigation) {
+    event.respondWith(
+      fetch(event.request)
+        .then((networkResponse) => {
+          if (networkResponse && networkResponse.status === 200) {
+            const clone = networkResponse.clone();
+            caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
+          }
+          return networkResponse;
+        })
+        .catch(() => caches.match('/index.html'))
+    );
+    return;
+  }
+
+  // Cache-First for static assets with background update
   event.respondWith(
     caches.match(event.request).then((cachedResponse) => {
       if (cachedResponse) {
@@ -57,10 +75,6 @@ self.addEventListener('fetch', (event) => {
           caches.open(CACHE_NAME).then((cache) => cache.put(event.request, clone));
         }
         return networkResponse;
-      }).catch(() => {
-        if (event.request.mode === 'navigate') {
-          return caches.match('/index.html');
-        }
       });
     })
   );
