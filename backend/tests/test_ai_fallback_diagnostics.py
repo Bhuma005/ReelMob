@@ -38,13 +38,13 @@ class TestCloudAIModelAndKeyResolution:
 
     def test_gemini_model_normalization(self, monkeypatch):
         monkeypatch.delenv("GEMINI_MODEL", raising=False)
-        assert get_gemini_model() == "gemini-2.0-flash"
+        assert get_gemini_model() == "gemini-3.6-flash"
 
-        monkeypatch.setenv("GEMINI_MODEL", "gemini-3.6-flash")
-        assert get_gemini_model() == "gemini-2.0-flash"
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-2.0-flash")
+        assert get_gemini_model() == "gemini-3.6-flash"
 
-        monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-flash")
-        assert get_gemini_model() == "gemini-1.5-flash"
+        monkeypatch.setenv("GEMINI_MODEL", "gemini-1.5-pro")
+        assert get_gemini_model() == "gemini-1.5-pro"
 
     def test_groq_model_normalization(self, monkeypatch):
         monkeypatch.delenv("GROQ_MODEL", raising=False)
@@ -89,7 +89,7 @@ class TestCloudAIModelAndKeyResolution:
         assert status["gemini_configured"] is True
         assert status["groq_configured"] is True
         assert status["is_available"] is True
-        assert status["gemini_model"] == "gemini-2.0-flash"
+        assert status["gemini_model"] == "gemini-3.6-flash"
         assert status["groq_model"] == "openai/gpt-oss-120b"
 
 
