@@ -161,73 +161,88 @@ def check_content_moderation(video_path: str, url: Optional[str] = None) -> Dict
             resolved_path = p
             break
 
+    downloaded_temp_video = None
     if not resolved_path:
-        raise FileNotFoundError(f"Video file not found at: {video_path}")
+        if url and url.strip():
+            logger.info(f"Local video not found for moderation check. Downloading on-demand from: {url}")
+            from backend.services.video_download import ensure_video_downloaded
+            resolved_path = ensure_video_downloaded(url.strip(), prefix="mod_")
+            downloaded_temp_video = resolved_path
+        else:
+            raise FileNotFoundError(f"Video file not found at: {video_path}")
 
-    ffmpeg_path, ffprobe_path = get_ff_paths()
-    duration = get_video_duration(resolved_path, ffprobe_path)
-
-    if duration <= 0.0:
-        try:
-            import cv2
-            cap = cv2.VideoCapture(resolved_path)
-            if cap.isOpened():
-                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-                total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
-                duration = total_frames / fps if fps > 0 else 0.0
-                cap.release()
-        except Exception:
-            pass
-
-    # Sample timestamps at 20%, 50%, and 80% (or 0.1s if very short)
-    if duration > 1.0:
-        sample_timestamps = [
-            round(duration * 0.2, 2),
-            round(duration * 0.5, 2),
-            round(duration * 0.8, 2),
-        ]
-    else:
-        sample_timestamps = [0.1]
-
-    extracted_frames = []
-    temp_dir = tempfile.mkdtemp(prefix="reelsmob_mod_")
     try:
-        for idx, ts in enumerate(sample_timestamps):
-            out_frame = os.path.join(temp_dir, f"mod_frame_{idx}.jpg")
-            if _extract_frame_at_time(resolved_path, ts, out_frame, ffmpeg_path):
-                extracted_frames.append(out_frame)
+        ffmpeg_path, ffprobe_path = get_ff_paths()
+        duration = get_video_duration(resolved_path, ffprobe_path)
 
-        # 1. Attempt Gemini Vision Analysis
-        if GEMINI_API_KEY and extracted_frames:
-            ai_res = _analyze_frames_with_gemini_moderation(extracted_frames)
-            if ai_res:
-                return ai_res
+        if duration <= 0.0:
+            try:
+                import cv2
+                cap = cv2.VideoCapture(resolved_path)
+                if cap.isOpened():
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                    total_frames = cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0
+                    duration = total_frames / fps if fps > 0 else 0.0
+                    cap.release()
+            except Exception:
+                pass
 
-        # 2. Heuristic check (for test cases or when Gemini API is offline/unavailable)
-        filename_lower = os.path.basename(resolved_path).lower()
-        if "watermark" in filename_lower or "tiktok" in filename_lower or "capcut" in filename_lower:
+        # Sample timestamps at 20%, 50%, and 80% (or 0.1s if very short)
+        if duration > 1.0:
+            sample_timestamps = [
+                round(duration * 0.2, 2),
+                round(duration * 0.5, 2),
+                round(duration * 0.8, 2),
+            ]
+        else:
+            sample_timestamps = [0.1]
+
+        extracted_frames = []
+        temp_dir = tempfile.mkdtemp(prefix="reelsmob_mod_")
+        try:
+            for idx, ts in enumerate(sample_timestamps):
+                out_frame = os.path.join(temp_dir, f"mod_frame_{idx}.jpg")
+                if _extract_frame_at_time(resolved_path, ts, out_frame, ffmpeg_path):
+                    extracted_frames.append(out_frame)
+
+            # 1. Attempt Gemini Vision Analysis
+            if GEMINI_API_KEY and extracted_frames:
+                ai_res = _analyze_frames_with_gemini_moderation(extracted_frames)
+                if ai_res:
+                    return ai_res
+
+            # 2. Heuristic check (for test cases or when Gemini API is offline/unavailable)
+            filename_lower = os.path.basename(resolved_path).lower()
+            if "watermark" in filename_lower or "tiktok" in filename_lower or "capcut" in filename_lower:
+                return {
+                    "watermark_detected": True,
+                    "confidence": 0.85,
+                    "severity": "medium",
+                    "flagged_labels": ["watermark_heuristic"],
+                    "notes": "Potential watermark or platform branding indicated by filename/metadata."
+                }
+
             return {
-                "watermark_detected": True,
-                "confidence": 0.85,
-                "severity": "medium",
-                "flagged_labels": ["watermark_heuristic"],
-                "notes": "Potential watermark or platform branding indicated by filename/metadata."
+                "watermark_detected": False,
+                "confidence": 0.80,
+                "severity": "none",
+                "flagged_labels": [],
+                "notes": "No visible platform watermarks detected (heuristic inspection; AI vision offline)."
             }
 
-        return {
-            "watermark_detected": False,
-            "confidence": 0.80,
-            "severity": "none",
-            "flagged_labels": [],
-            "notes": "No visible platform watermarks detected (heuristic inspection; AI vision offline)."
-        }
-
+        finally:
+            try:
+                for f in extracted_frames:
+                    if os.path.exists(f):
+                        os.remove(f)
+                if os.path.exists(temp_dir):
+                    os.rmdir(temp_dir)
+            except Exception:
+                pass
     finally:
-        try:
-            for f in extracted_frames:
-                if os.path.exists(f):
-                    os.remove(f)
-            if os.path.exists(temp_dir):
-                os.rmdir(temp_dir)
-        except Exception:
-            pass
+        # Clean up temporary on-demand downloaded video
+        if downloaded_temp_video and os.path.exists(downloaded_temp_video):
+            try:
+                os.remove(downloaded_temp_video)
+            except Exception:
+                pass
