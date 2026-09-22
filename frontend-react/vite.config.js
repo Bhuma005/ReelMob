@@ -11,9 +11,33 @@ const proxy = proxyEndpoints.reduce((acc, path) => {
   return acc;
 }, {});
 
+const buildVersion = process.env.VITE_APP_VERSION || String(Date.now());
+
+function generateVersionJsonPlugin() {
+  return {
+    name: 'generate-version-json',
+    generateBundle() {
+      this.emitFile({
+        type: 'asset',
+        fileName: 'version.json',
+        source: JSON.stringify({
+          version: buildVersion,
+          buildTime: new Date().toISOString(),
+        }, null, 2),
+      });
+    },
+  };
+}
+
 // https://vite.dev/config/
 export default defineConfig({
-  plugins: [react()],
+  plugins: [
+    react(),
+    generateVersionJsonPlugin(),
+  ],
+  define: {
+    __APP_BUILD_VERSION__: JSON.stringify(buildVersion),
+  },
   build: {
     chunkSizeWarningLimit: 600,
     rollupOptions: {
