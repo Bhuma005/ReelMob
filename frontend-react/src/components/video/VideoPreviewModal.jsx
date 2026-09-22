@@ -15,23 +15,39 @@ export function VideoPreviewModal({
   onDelete,
 }) {
   const [videoError, setVideoError] = useState(false);
+  const [isBuffering, setIsBuffering] = useState(false);
   const [copied, setCopied] = useState(false);
   const videoRef = useRef(null);
 
   if (!video) return null;
 
-  const videoSrc = 
+  const fallbackProxySrc = video.id ? `/api/dashboard/videos/${video.id}/stream` : '';
+  const initialSrc = 
     video.storage_url || 
     video.public_url || 
     video.video_url || 
     video.url || 
     video.signed_url || 
-    (video.id ? `/api/dashboard/videos/${video.id}/stream` : '') || 
+    fallbackProxySrc || 
     '';
 
+  const [currentSrc, setCurrentSrc] = useState(initialSrc);
+
+  const handleVideoError = () => {
+    if (fallbackProxySrc && currentSrc !== fallbackProxySrc) {
+      console.warn('[VideoPreview] Direct source failed, falling back to backend stream proxy:', fallbackProxySrc);
+      setCurrentSrc(fallbackProxySrc);
+      if (videoRef.current) {
+        videoRef.current.load();
+      }
+    } else {
+      setVideoError(true);
+    }
+  };
+
   const copyVideoLink = () => {
-    if (!videoSrc) return;
-    const fullUrl = videoSrc.startsWith('http') ? videoSrc : `${window.location.origin}${videoSrc}`;
+    if (!currentSrc) return;
+    const fullUrl = currentSrc.startsWith('http') ? currentSrc : `${window.location.origin}${currentSrc}`;
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     toast.success('Video stream link copied to clipboard');
@@ -76,9 +92,9 @@ export function VideoPreviewModal({
           </div>
 
           <div className="flex items-center gap-2">
-            {videoSrc && (
+            {currentSrc && (
               <a
-                href={videoSrc}
+                href={currentSrc}
                 target="_blank"
                 rel="noopener noreferrer"
                 download={filename}
@@ -184,16 +200,33 @@ export function VideoPreviewModal({
             <div className="rounded-2xl border border-border bg-surface-elevated/60 p-4 space-y-4 shadow-xl">
               {/* Video Player Display Container */}
               <div className="relative w-full aspect-[9/16] max-h-[380px] mx-auto bg-black rounded-xl overflow-hidden border border-border shadow-2xl flex items-center justify-center">
-                {videoSrc && !videoError ? (
-                  <video
-                    ref={videoRef}
-                    src={videoSrc}
-                    poster={video.thumbnail_url}
-                    controls
-                    playsInline
-                    className="w-full h-full object-contain"
-                    onError={() => setVideoError(true)}
-                  />
+                {currentSrc && !videoError ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      poster={video.thumbnail_url}
+                      controls
+                      playsInline
+                      preload="auto"
+                      className="w-full h-full object-contain"
+                      onWaiting={() => setIsBuffering(true)}
+                      onStalled={() => setIsBuffering(true)}
+                      onPlaying={() => setIsBuffering(false)}
+                      onCanPlay={() => setIsBuffering(false)}
+                      onError={handleVideoError}
+                    >
+                      <source src={currentSrc} type="video/mp4" />
+                      Your browser does not support playing this video.
+                    </video>
+                    {isBuffering && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none transition-opacity">
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/75 backdrop-blur-xs border border-white/10 text-white text-xs font-mono">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent" />
+                          <span>Buffering...</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
                 ) : (
                   <div className="flex flex-col items-center justify-center p-6 text-center">
                     {video.thumbnail_url ? (
@@ -212,9 +245,9 @@ export function VideoPreviewModal({
                         ? 'Inline stream could not decode. Use the direct link below.' 
                         : 'Preview stream stored in cloud bucket.'}
                     </p>
-                    {videoSrc && (
+                    {currentSrc && (
                       <a
-                        href={videoSrc}
+                        href={currentSrc}
                         target="_blank"
                         rel="noopener noreferrer"
                         download={filename}
@@ -236,27 +269,27 @@ export function VideoPreviewModal({
                   </span>
                   <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-elevated border border-border/50">
                     <a
-                      href={videoSrc || '#'}
+                      href={currentSrc || '#'}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-accent hover:underline font-mono text-[11px] truncate flex-1"
-                      title={videoSrc}
+                      title={currentSrc}
                     >
-                      {videoSrc ? (videoSrc.length > 32 ? `${videoSrc.slice(0, 32)}...` : videoSrc) : 'Direct stream link'}
+                      {currentSrc ? (currentSrc.length > 32 ? `${currentSrc.slice(0, 32)}...` : currentSrc) : 'Direct stream link'}
                     </a>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
                         onClick={copyVideoLink}
-                        disabled={!videoSrc}
+                        disabled={!currentSrc}
                         className="p-1 rounded text-text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
                         title="Copy video link"
                       >
                         {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
-                      {videoSrc && (
+                      {currentSrc && (
                         <a
-                          href={videoSrc}
+                          href={currentSrc}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="p-1 rounded text-text-muted hover:text-text hover:bg-surface transition-colors"
