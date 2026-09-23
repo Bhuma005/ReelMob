@@ -2,7 +2,7 @@
 FROM node:20-alpine AS frontend-builder
 WORKDIR /app/frontend-react
 COPY frontend-react/package*.json ./
-RUN npm install
+RUN npm ci
 COPY frontend-react/ ./
 RUN npm run build
 
@@ -29,8 +29,7 @@ WORKDIR $HOME/app
 # Copy Python requirements & install
 COPY --chown=user:user backend/requirements.txt ./backend/requirements.txt
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r backend/requirements.txt && \
-    pip install --no-cache-dir requests python-dotenv supabase google-api-python-client google-auth-oauthlib
+    pip install --no-cache-dir -r backend/requirements.txt
 
 # Copy built frontend from Stage 1
 COPY --chown=user:user --from=frontend-builder /app/frontend-react/dist ./frontend-react/dist

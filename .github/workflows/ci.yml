@@ -38,7 +38,7 @@ jobs:
           PYTHONPATH: .
           ENVIRONMENT: test
           SUPABASE_URL: ${{ secrets.SUPABASE_URL || 'https://mock.supabase.co' }}
-          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || 'mock-key-for-tests' }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY || 'mock-service-role-key-for-tests-32-chars-long' }}
           GROQ_API_KEY: ${{ secrets.GROQ_API_KEY || 'mock-groq-key' }}
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY || 'mock-gemini-key' }}
         run: |
@@ -64,10 +64,29 @@ jobs:
           cache-dependency-path: frontend-react/package-lock.json
 
       - name: Install frontend dependencies
-        run: npm ci || npm install
+        run: npm ci
 
       - name: Build frontend
         run: npm run build
 
       - name: Run frontend unit & component tests
         run: npm test
+
+  docker-build:
+    name: Docker Build Verification
+    runs-on: ubuntu-latest
+    needs: [backend-tests, frontend-build]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Build Docker image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: false
+          tags: reelmob:ci
