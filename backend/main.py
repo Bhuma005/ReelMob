@@ -1200,10 +1200,10 @@ async def stream_dashboard_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/dashboard/videos/{video_id}", summary="Delete a video", description="Deletes video from Supabase Storage and DB.")
+@app.delete("/api/dashboard/videos/{video_id}", summary="Delete / Purge video storage", description="Purges raw video storage while permanently preserving video metadata as cleaned.")
 async def delete_dashboard_video(video_id: str):
     from cloud.cloud_auth import get_supabase_client
-    from datetime import datetime
+    from datetime import datetime, timezone
     clean_video_id = sanitize_filename_or_id(video_id)
     if not clean_video_id:
         return {"status": "error", "message": "Invalid video_id"}
@@ -1222,17 +1222,34 @@ async def delete_dashboard_video(video_id: str):
             except Exception as e:
                 logger.error(f"Failed to delete from storage: {e}")
 
-        sb.table("scheduled_videos").delete().eq("library_video_id", clean_video_id).execute()
-        sb.table("video_library").delete().eq("id", clean_video_id).execute()
+        # Cancel any pending schedule queue entry
+        try:
+            sb.table("scheduled_videos").delete().eq("library_video_id", clean_video_id).execute()
+        except Exception as sqle:
+            logger.warning(f"Could not remove scheduled_videos entry: {sqle}")
 
-        with open("reelgrab_audit.log", "a", encoding='utf-8') as log_file:
-            log_file.write(f"[{datetime.now().isoformat()}] DELETED VIDEO | ID: {clean_video_id} | Title: {title} | Storage: {storage_path}\n")
+        # Permanently retain metadata row in video_library, updating status to 'cleaned'
+        now_iso = datetime.now(timezone.utc).isoformat()
+        sb.table("video_library").update({
+            "status": "cleaned",
+            "storage_path": None,
+            "storage_deleted_at": now_iso
+        }).eq("id", clean_video_id).execute()
 
-        return {"status": "success", "message": "Video deleted successfully"}
+        try:
+            sb.table("video_activity_log").insert({
+                "video_id": clean_video_id,
+                "event_type": "STORAGE_PURGED",
+                "message": f"Storage purged by user. Video '{title}' metadata permanently preserved as cleaned."
+            }).execute()
+        except Exception as log_err:
+            logger.debug(f"Activity log write skipped: {log_err}")
+
+        return {"status": "success", "message": "Video storage purged; library metadata preserved permanently as cleaned"}
     except Exception as e:
         logger.error(f"Failed to delete video: {e}")
         err = traceback.format_exc()
-        logger.error(f"Convert error trace: {err}")
+        logger.error(f"Delete video error trace: {err}")
         return {"status": "error", "message": repr(e)}
 
 
