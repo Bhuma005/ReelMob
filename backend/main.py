@@ -621,7 +621,9 @@ async def download_thumbnail(req: URLRequest, request: Request):
 import hashlib
 from datetime import datetime
 
-AI_JOBS_STORE: Dict[str, dict] = {}
+from backend.services.job_store import JobStore
+
+AI_JOBS_STORE: JobStore = JobStore(default_type="ai_analysis")
 AI_CACHE_STORE: Dict[str, dict] = {}
 
 def get_content_hash(url: str, title: str, description: str) -> str:
@@ -1386,8 +1388,8 @@ async def edit_video_endpoint(req: EditVideoRequest):
         )
 
 
-# In-memory store for async highlight detection jobs
-HIGHLIGHT_JOBS: Dict[str, Dict[str, Any]] = {}
+# Durable store for async highlight detection jobs
+HIGHLIGHT_JOBS: JobStore = JobStore(default_type="highlight_detection")
 
 def execute_highlight_job(
     job_id: str,
@@ -1517,7 +1519,8 @@ async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
         )
 
 
-MODERATION_JOBS: Dict[str, Dict[str, Any]] = {}
+# Durable store for async content moderation jobs
+MODERATION_JOBS: JobStore = JobStore(default_type="content_moderation")
 
 def execute_moderation_job(
     job_id: str,

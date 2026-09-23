@@ -6,10 +6,10 @@
 
 -- 1. Create durable jobs table for all asynchronous operations
 CREATE TABLE IF NOT EXISTS jobs (
-    id                UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    id                TEXT PRIMARY KEY,
     job_type          TEXT NOT NULL,
     status            TEXT NOT NULL DEFAULT 'queued'
-                      CHECK (status IN ('queued', 'running', 'completed', 'failed', 'cancelled')),
+                      CHECK (lower(status) IN ('queued', 'pending', 'running', 'processing', 'completed', 'failed', 'cancelled')),
     progress          INT NOT NULL DEFAULT 0,
     current_step      TEXT DEFAULT 'Queued for processing',
     input_reference   JSONB DEFAULT '{}'::jsonb,
