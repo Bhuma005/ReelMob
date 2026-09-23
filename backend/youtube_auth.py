@@ -149,6 +149,39 @@ def _fetch_channel_name(access_token: str) -> str:
         logger.warning(f"Channel name fetch error (token may be expired): {e}")
     return "YouTube Channel"
 
+import re
+
+DEFAULT_ALLOWED_REDIRECT_PATTERNS = [
+    r"^https?://localhost(:\d+)?(/.*)?$",
+    r"^https?://127\.0\.0\.1(:\d+)?(/.*)?$",
+    r"^https://([a-zA-Z0-9-]+\.)?onrender\.com(/.*)?$",
+    r"^https://([a-zA-Z0-9-]+\.)?reelmob\.app(/.*)?$",
+]
+
+def is_allowed_redirect_uri(uri: str) -> bool:
+    """Validates whether a redirect URI matches configured production allowlists."""
+    if not uri or not isinstance(uri, str):
+        return False
+    uri = uri.strip()
+
+    custom_allowlist = os.getenv("ALLOWED_OAUTH_REDIRECT_URIS", "")
+    if custom_allowlist:
+        allowed_items = [item.strip() for item in custom_allowlist.split(",") if item.strip()]
+        for allowed in allowed_items:
+            if uri == allowed:
+                return True
+            try:
+                if re.match(allowed, uri):
+                    return True
+            except re.error:
+                pass
+
+    for pattern in DEFAULT_ALLOWED_REDIRECT_PATTERNS:
+        if re.match(pattern, uri):
+            return True
+
+    return False
+
 def _get_public_base_url(request: Request = None) -> str:
     env_redirect = os.getenv("GOOGLE_REDIRECT_URI") or os.getenv("REDIRECT_URI")
     if env_redirect:
@@ -162,16 +195,33 @@ def _get_public_base_url(request: Request = None) -> str:
         proto = request.headers.get("x-forwarded-proto") or request.url.scheme or "https"
         host = request.headers.get("x-forwarded-host") or request.headers.get("host")
         if host:
-            return f"{proto}://{host}".rstrip("/")
+            clean_host = host.split(":")[0].lower()
+            allowed_hosts = {"localhost", "127.0.0.1"}
+            custom_hosts = os.getenv("ALLOWED_HOSTS", "")
+            if custom_hosts:
+                allowed_hosts.update([h.strip().lower() for h in custom_hosts.split(",") if h.strip()])
+
+            if clean_host in allowed_hosts or clean_host.endswith(".onrender.com") or clean_host.endswith(".reelmob.app"):
+                return f"{proto}://{host}".rstrip("/")
+            else:
+                logger.warning(f"Untrusted Host header rejected in _get_public_base_url: {host}")
 
     return os.getenv("PUBLIC_BASE_URL", "https://reelmob.onrender.com").rstrip("/")
 
 def _get_redirect_uri(request: Request = None, override_uri: str = None) -> str:
+    canonical_env = os.getenv("GOOGLE_REDIRECT_URI") or os.getenv("REDIRECT_URI")
+
     if override_uri and override_uri.startswith(("http://", "https://")):
-        return override_uri.strip()
-    env_redirect = os.getenv("GOOGLE_REDIRECT_URI") or os.getenv("REDIRECT_URI")
-    if env_redirect:
-        return env_redirect.strip()
+        cleaned_override = override_uri.strip()
+        if is_allowed_redirect_uri(cleaned_override):
+            return cleaned_override
+        logger.warning(
+            f"Blocked unauthorized OAuth redirect_uri override: '{cleaned_override}'. "
+            f"Falling back to canonical redirect URI."
+        )
+
+    if canonical_env:
+        return canonical_env.strip()
     return f"{_get_public_base_url(request)}/auth/callback"
 
 # ── routes ───────────────────────────────────────────────────────────────────
