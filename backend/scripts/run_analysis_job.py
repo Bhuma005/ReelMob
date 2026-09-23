@@ -125,6 +125,11 @@ def main():
         fallback_desc = description or "Watch this trending video! #Shorts #Viral"
         fallback_tags = backfill_hashtags([], fallback_title, fallback_desc, min_count=7)
 
+        from backend.services.scheduler import calculate_deterministic_schedule
+        sched_rec = calculate_deterministic_schedule()
+        posting_slot = sched_rec.get("human_readable_time") or sched_rec.get("fallback_schedule", {}).get("human_readable_time", "06:00 PM")
+        posting_reason = sched_rec.get("reason", "Deterministic scheduling fallback.")
+
         raw_result = {
             "title": fallback_title,
             "description": fallback_desc,
@@ -133,7 +138,11 @@ def main():
             "title_candidates": [{"strategy": "Original", "title": fallback_title}],
             "viewer_appeal_score": 80,
             "title_reason": ["GitHub Actions runner fallback"],
-            "posting_recommendation": {"human_readable_time": "07:30 PM", "reason": "Standard evening slot."},
+            "posting_recommendation": {
+                "human_readable_time": posting_slot,
+                "reason": posting_reason,
+                "status": sched_rec.get("status", "insufficient_data")
+            },
             "ai_failed": True,
             "fallback": True,
             "fallback_reason": fallback_reason,
@@ -150,7 +159,7 @@ def main():
             "instagram": fallback_tags,
             "analysis": f"Completed with fallback metadata ({fallback_reason}).",
             "confidence_notes": "FALLBACK",
-            "scheduled_time": "07:30 PM",
+            "scheduled_time": posting_slot,
             "raw_result": raw_result,
             "ai_failed": True,
             "fallback_reason": fallback_reason,

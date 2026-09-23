@@ -57,12 +57,16 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
     
     opt_title = req.title
     opt_desc = req.description
-    opt_tags = req.hashtags
-    sched_time = req.scheduled_time_human or "07:30 PM" 
+    from backend.services.scheduler import calculate_deterministic_schedule
+    sched_intel = calculate_deterministic_schedule()
+    default_posting_time = sched_intel.get("human_readable_time") or (
+        sched_intel.get("fallback_schedule", {}).get("human_readable_time", "06:00 PM")
+    )
+    sched_time = req.scheduled_time_human or default_posting_time 
     
     if req.iso_schedule:
         final_iso_schedule = req.iso_schedule
-        human_readable_time = req.scheduled_time_human or "07:30 PM"
+        human_readable_time = req.scheduled_time_human or default_posting_time
     else:
         # ── Intelligent Date Scheduling (Max 2 per day) ──
         try:

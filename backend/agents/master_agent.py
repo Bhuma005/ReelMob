@@ -173,9 +173,9 @@ class MasterAgent(BaseAgent):
                 "viewer_appeal_score": 90,
                 "title_reason": ["Front-loaded caption hook", "Clear subject context"],
                 "posting": {
-                    "scheduled_time": "19:30",
-                    "score": 95,
-                    "reason": "Standard peak 7:30 PM mobile audience retention slot."
+                    "scheduled_time": "18:00",
+                    "score": 75,
+                    "reason": "Standard evening mobile audience testing slot."
                 }
             }
 

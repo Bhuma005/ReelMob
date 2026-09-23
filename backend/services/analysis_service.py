@@ -17,6 +17,7 @@ import backend.video_analyzer as video_analyzer
 import backend.services.cloud_ai as cloud_ai
 from backend.agents.master_agent import MasterAgent, backfill_hashtags
 from backend.agents.base import AgentState
+from backend.services.scheduler import calculate_deterministic_schedule
 
 logger = logging.getLogger("reelsmob.analysis_service")
 
@@ -125,6 +126,10 @@ async def run_video_analysis(
         video_analyzed = video_analysis.get("video_analyzed", True)
         cloud_sub_fallback = cloud_meta.get("fallback_reason") or (fallback_reason if timed_out else None)
 
+        sched_rec = calculate_deterministic_schedule()
+        posting_slot = sched_rec.get("human_readable_time") or sched_rec.get("fallback_schedule", {}).get("human_readable_time", "06:00 PM")
+        posting_reason = sched_rec.get("reason", "Peak engagement slot calculated deterministically.")
+
         raw_result = {
             "title": best_title,
             "description": desc,
@@ -137,8 +142,9 @@ async def run_video_analysis(
                 "High CTR algorithm match"
             ],
             "posting_recommendation": {
-                "human_readable_time": "07:30 PM",
-                "reason": "Peak engagement slot for short-form video audience."
+                "human_readable_time": posting_slot,
+                "reason": posting_reason,
+                "status": sched_rec.get("status", "recommended")
             },
             "ai_failed": False,
             "source_label": source_label,
@@ -162,7 +168,7 @@ async def run_video_analysis(
                 "Generated via ReelsMob Cloud AI using lightweight caption context (video analysis timed out)."
             ),
             "confidence_notes": "VERY HIGH (Cloud AI)" if not timed_out else "HIGH (Lightweight Cloud AI)",
-            "scheduled_time": "07:30 PM",
+            "scheduled_time": posting_slot,
             "raw_result": raw_result,
             "ai_failed": False,
             "source_label": source_label,
@@ -181,6 +187,10 @@ async def run_video_analysis(
         fallback_desc = raw_description or "Watch this trending video! #Shorts #Viral"
         fallback_tags = ["#Shorts", "#Viral", "#Trending", "#Reel"]
 
+        sched_rec = calculate_deterministic_schedule()
+        posting_slot = sched_rec.get("human_readable_time") or sched_rec.get("fallback_schedule", {}).get("human_readable_time", "06:00 PM")
+        posting_reason = sched_rec.get("reason", "Deterministic schedule recommendation.")
+
         raw_result = {
             "title": fallback_title,
             "description": fallback_desc,
@@ -190,8 +200,9 @@ async def run_video_analysis(
             "viewer_appeal_score": 75,
             "title_reason": ["Deterministic fallback (Cloud AI unconfigured)"],
             "posting_recommendation": {
-                "human_readable_time": "07:30 PM",
-                "reason": "Standard peak evening engagement slot."
+                "human_readable_time": posting_slot,
+                "reason": posting_reason,
+                "status": sched_rec.get("status", "insufficient_data")
             },
             "ai_failed": True,
             "fallback": True,
@@ -209,7 +220,7 @@ async def run_video_analysis(
             "instagram": fallback_tags,
             "analysis": f"Generated using deterministic fallback ({fallback_reason}).",
             "confidence_notes": "FALLBACK",
-            "scheduled_time": "07:30 PM",
+            "scheduled_time": posting_slot,
             "raw_result": raw_result,
             "ai_failed": True,
             "fallback_reason": fallback_reason,
@@ -310,7 +321,9 @@ async def run_video_analysis(
         "instagram": instagram_tags,
         "analysis": analytics.get("reasoning", posting.get("reason", "Optimized based on audience peak activity.")),
         "confidence_notes": posting.get("confidence", "HIGH"),
-        "scheduled_time": posting.get("human_readable_time", "07:30 PM"),
+        "scheduled_time": posting.get("human_readable_time") or (
+            calculate_deterministic_schedule().get("human_readable_time") or "06:00 PM"
+        ),
         "raw_result": raw_result,
         "ai_failed": ai_failed,
         "fallback_reason": fallback_reason or metadata.get("fallback_reason"),

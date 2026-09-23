@@ -61,9 +61,20 @@ def test_update_video_tags_api_endpoint(client):
     assert data["tags"] == ["trending", "behind_the_scenes", "hook"]
 
 
+def test_tag_performance_insufficient_data():
+    data = calculate_performance_by_tag(days=30, records=[])
+    assert data["status"] == "ANALYTICS_UNAVAILABLE"
+    assert data["tags"] == []
+
+
 def test_tag_performance_calculation_and_endpoint(client):
-    # Service calculation
-    data = calculate_performance_by_tag(days=30)
+    mock_records = [
+        {"id": "1", "title": "V1", "status": "published", "views": 1000, "likes": 50, "comments": 5, "tags": ["tech", "ai"]},
+        {"id": "2", "title": "V2", "status": "published", "views": 2000, "likes": 100, "comments": 10, "tags": ["tech"]},
+        {"id": "3", "title": "V3", "status": "published", "views": 3000, "likes": 150, "comments": 15, "tags": ["ai", "growth"]},
+    ]
+    data = calculate_performance_by_tag(days=30, records=mock_records)
+    assert data["status"] == "READY"
     assert "tags" in data
     assert len(data["tags"]) > 0
 
@@ -75,9 +86,8 @@ def test_tag_performance_calculation_and_endpoint(client):
         assert "avg_engagement_rate" in item
         assert item["benchmark_status"] in ["overperforming", "average", "underperforming"]
 
-    # API endpoint
+    # API endpoint returns 200 with tags list
     res = client.get("/api/dashboard/analytics/tags?days=30")
     assert res.status_code == 200
     res_data = res.json()
     assert "tags" in res_data
-    assert len(res_data["tags"]) > 0

@@ -28,7 +28,7 @@ class PostingIntelligenceAgent(BaseAgent):
                 "confidence": posting_intel.get("confidence", "LOW"),
                 "recommended_slot": recommended_slot,
                 "scored_slots": posting_intel.get("scored_slots", []),
-                "human_readable_time": posting_intel.get("human_readable_time", "07:30 PM")
+                "human_readable_time": posting_intel.get("human_readable_time", "06:00 PM")
             })
         except Exception as e:
             logger.error(f"Posting engine failed: {e}")

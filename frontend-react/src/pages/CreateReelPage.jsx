@@ -405,7 +405,7 @@ export default function CreateReelPage() {
       instagram: fallbackTags,
       analysis: "Using original video metadata (bypassed AI model).",
       confidence_notes: "MANUAL",
-      scheduled_time: "07:30 PM",
+      scheduled_time: null,
       raw_result: {
         title: fallbackTitle,
         description: fallbackDesc,
@@ -415,8 +415,9 @@ export default function CreateReelPage() {
         viewer_appeal_score: 75,
         title_reason: ['Original Source Metadata'],
         posting_recommendation: {
-          human_readable_time: "07:30 PM",
-          reason: "Standard evening posting slot."
+          human_readable_time: null,
+          reason: "Not enough channel data to recommend an authoritative posting time.",
+          status: "insufficient_data"
         }
       }
     });

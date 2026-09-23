@@ -1,6 +1,5 @@
 import json
 from datetime import datetime, timedelta
-import random
 from backend.analytics import aggregate_channel_performance
 
 def generate_candidate_slots(start_date: datetime, days: int = 14, interval_mins: int = 30):
@@ -27,19 +26,15 @@ def score_posting_slot(slot: datetime, analytics_data: dict, topic: str = None) 
     Weights:
     historical_hour: 30%
     day_of_week: 15%
-    audience_activity (mocked as general evening boost): 25%
+    audience_activity (evening slot boost): 25%
     topic_performance: 10%
-    recent_performance (mocked as recent hour boost): 10%
+    recent_performance: 10%
     data_confidence: 10%
     """
     if analytics_data.get("status") == "INSUFFICIENT_DATA":
-        # Testing fallback: give evening slots (18:00 - 21:00) a slight bump so we don't schedule at 3 AM.
+        # Deterministic fallback: evening slots (18:00 - 21:00) get a fixed priority score without randomness
         hour = slot.hour
-        base = 50.0
-        if 18 <= hour <= 21:
-            base += random.uniform(20.0, 30.0) # testing slots
-        else:
-            base += random.uniform(0.0, 10.0)
+        base = 75.0 if 18 <= hour <= 21 else 50.0
         return round(base, 1)
 
     score = 0.0

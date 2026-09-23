@@ -138,23 +138,25 @@ export default function SchedulerPage() {
                   <div>
                     <span className="text-xs font-mono text-text-muted uppercase">Recommended Window</span>
                     <div className="text-2xl sm:text-3xl font-bold text-success font-mono mt-0.5">
-                      {recommendation.recommended_time || '07:30 PM'}
-                      <span className="text-xs font-normal text-text-muted ml-2 font-mono">
-                        {recommendation.timezone || 'IST'}
-                      </span>
+                      {recommendation.recommended_time || (recommendation.fallback_schedule?.recommended_time ? `${recommendation.fallback_schedule.recommended_time} (Fallback)` : 'Not enough data')}
+                      {recommendation.timezone && (
+                        <span className="text-xs font-normal text-text-muted ml-2 font-mono">
+                          {recommendation.timezone}
+                        </span>
+                      )}
                     </div>
                     <div className="text-xs text-text-muted mt-1">
-                      {recommendation.recommended_date || 'Today'}
+                      {recommendation.recommended_date || recommendation.fallback_schedule?.recommended_date || 'Configure manually'}
                     </div>
                   </div>
 
                   <div className="text-right">
                     <span className="text-[10px] uppercase font-mono text-text-muted">Algorithm Score</span>
                     <div className="text-xl font-bold text-accent font-mono">
-                      {recommendation.score || '92.4'}/100
+                      {recommendation.score !== undefined ? `${recommendation.score}/100` : (recommendation.status === 'insufficient_data' ? '--/100' : '92.4/100')}
                     </div>
                     <span className="text-[10px] font-mono text-text-muted uppercase">
-                      Conf: <strong className="text-text">{recommendation.confidence || 'HIGH'}</strong>
+                      Conf: <strong className="text-text">{recommendation.status === 'insufficient_data' ? 'INSUFFICIENT DATA' : (recommendation.confidence || 'HIGH')}</strong>
                     </span>
                   </div>
                 </div>

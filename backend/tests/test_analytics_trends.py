@@ -15,27 +15,59 @@ def client():
         yield c
 
 
-def test_calculate_channel_trends_structure_and_benchmarks():
-    data = calculate_channel_trends(days=30)
-    assert "summary" in data
-    assert "trends" in data
+def test_calculate_channel_trends_insufficient_data():
+    """Verify that when fewer than 3 records exist, no synthetic data is fabricated."""
+    data = calculate_channel_trends(days=30, records=[])
+    assert data["status"] == "ANALYTICS_UNAVAILABLE"
+    assert data["summary"]["total_videos"] == 0
+    assert data["summary"]["rolling_avg_views"] == 0.0
+    assert len(data["trends"]) == 0
 
+
+def test_calculate_channel_trends_with_records():
+    """Verify mathematical calculation when sufficient real records exist."""
+    mock_records = [
+        {
+            "id": "vid-1",
+            "title": "Top Performing Reel",
+            "status": "published",
+            "views": 10000,
+            "likes": 800,
+            "comments": 50,
+            "created_at": "2026-09-20T10:00:00Z"
+        },
+        {
+            "id": "vid-2",
+            "title": "Average Reel",
+            "status": "published",
+            "views": 5000,
+            "likes": 300,
+            "comments": 20,
+            "created_at": "2026-09-21T10:00:00Z"
+        },
+        {
+            "id": "vid-3",
+            "title": "Underperforming Reel",
+            "status": "published",
+            "views": 2000,
+            "likes": 80,
+            "comments": 5,
+            "created_at": "2026-09-22T10:00:00Z"
+        }
+    ]
+    data = calculate_channel_trends(days=30, records=mock_records)
+    assert data["status"] == "READY"
     summary = data["summary"]
     assert summary["days"] == 30
-    assert summary["total_videos"] > 0
-    assert summary["rolling_avg_views"] > 0
-    assert summary["rolling_avg_likes"] >= 0
-    assert summary["rolling_avg_engagement_rate"] >= 0
-
-    assert (
-        summary["overperforming_count"]
-        + summary["underperforming_count"]
-        + summary["average_count"]
-        == summary["total_videos"]
-    )
+    assert summary["total_videos"] == 3
+    # Average: (10000 + 5000 + 2000) / 3 = 5666.7
+    assert round(summary["rolling_avg_views"]) == 5667
+    assert summary["overperforming_count"] == 1  # 10000 is > 5666.7 * 1.15 (6516.7)
+    assert summary["underperforming_count"] == 1 # 2000 is < 5666.7 * 0.85 (4816.7)
+    assert summary["average_count"] == 1         # 5000 is between 4816.7 and 6516.7
 
     trends = data["trends"]
-    assert len(trends) == summary["total_videos"]
+    assert len(trends) == 3
 
     for item in trends:
         assert "date" in item
@@ -62,7 +94,6 @@ def test_analytics_trends_api_endpoint(client):
     assert "summary" in json_data
     assert "trends" in json_data
     assert json_data["summary"]["days"] == 30
-    assert len(json_data["trends"]) > 0
 
 
 def test_analytics_trends_api_custom_days(client):
@@ -70,3 +101,4 @@ def test_analytics_trends_api_custom_days(client):
     assert res.status_code == 200
     json_data = res.json()
     assert json_data["summary"]["days"] == 7
+
