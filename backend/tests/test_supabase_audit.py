@@ -133,3 +133,79 @@ class TestMigration004Integrity:
         ]
         for tbl in expected_tables:
             assert f"ALTER TABLE IF EXISTS {tbl} ENABLE ROW LEVEL SECURITY;" in content
+
+
+class TestMigration008Integrity:
+    def test_migration_008_exists_and_contains_jobs_and_claims(self):
+        root = Path(__file__).parent.parent.parent
+        migration_file = root / "cloud" / "008_production_hardening.sql"
+        assert migration_file.exists(), f"Migration file missing at {migration_file}"
+
+        content = migration_file.read_text(encoding="utf-8")
+
+        # 1. Jobs table creation
+        assert "CREATE TABLE IF NOT EXISTS jobs" in content
+        assert "job_type" in content
+        assert "progress" in content
+        assert "input_reference" in content
+        assert "result_reference" in content
+
+        # 2. Atomic claim columns on scheduled_videos
+        assert "claimed_at TIMESTAMPTZ" in content
+        assert "lease_expires_at TIMESTAMPTZ" in content
+        assert "worker_id TEXT" in content
+
+        # 3. Status checks
+        assert "scheduled_videos_upload_status_check" in content
+        assert "'claimed'" in content
+        assert "'cancelled'" in content
+        assert "video_library_status_check" in content
+        assert "'cleaned'" in content
+
+        # 4. RLS enabled on jobs
+        assert "ALTER TABLE IF EXISTS jobs ENABLE ROW LEVEL SECURITY;" in content
+
+
+class TestStateMachine:
+    def test_legal_library_transitions(self):
+        from backend.services.state_machine import (
+            can_transition_library,
+            transition_library_status,
+            LibraryStatus,
+        )
+
+        # Legal: created -> ready -> scheduled -> uploading -> published -> cleaned
+        assert can_transition_library(LibraryStatus.CREATED, LibraryStatus.READY)
+        assert can_transition_library(LibraryStatus.READY, LibraryStatus.SCHEDULED)
+        assert can_transition_library(LibraryStatus.SCHEDULED, LibraryStatus.UPLOADING)
+        assert can_transition_library(LibraryStatus.UPLOADING, LibraryStatus.PUBLISHED)
+        assert can_transition_library(LibraryStatus.PUBLISHED, LibraryStatus.CLEANED)
+
+        # Illegal: published -> processing
+        assert not can_transition_library(LibraryStatus.PUBLISHED, LibraryStatus.PROCESSING)
+        with pytest.raises(ValueError, match="Illegal Library state transition"):
+            transition_library_status(LibraryStatus.PUBLISHED, LibraryStatus.PROCESSING)
+
+        # Illegal: cleaned is terminal
+        assert not can_transition_library(LibraryStatus.CLEANED, LibraryStatus.UPLOADING)
+
+    def test_legal_queue_transitions(self):
+        from backend.services.state_machine import (
+            can_transition_queue,
+            transition_queue_status,
+            QueueStatus,
+        )
+
+        # Legal: pending -> claimed -> uploading -> uploaded
+        assert can_transition_queue(QueueStatus.PENDING, QueueStatus.CLAIMED)
+        assert can_transition_queue(QueueStatus.CLAIMED, QueueStatus.UPLOADING)
+        assert can_transition_queue(QueueStatus.UPLOADING, QueueStatus.UPLOADED)
+
+        # Expired lease recovery: claimed -> pending
+        assert can_transition_queue(QueueStatus.CLAIMED, QueueStatus.PENDING)
+
+        # Illegal: uploaded -> pending
+        assert not can_transition_queue(QueueStatus.UPLOADED, QueueStatus.PENDING)
+        with pytest.raises(ValueError, match="Illegal Queue state transition"):
+            transition_queue_status(QueueStatus.UPLOADED, QueueStatus.PENDING)
+
