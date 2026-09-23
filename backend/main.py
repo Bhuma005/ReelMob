@@ -1711,10 +1711,17 @@ async def search_dashboard_endpoint(q: str = ""):
     try:
         from cloud.cloud_auth import get_supabase_client
         sb = get_supabase_client()
-        query_res = sb.table("video_library").select("*").limit(100).execute()
-        raw_rows = query_res.data or []
+        if sb:
+            # Pushes ILIKE search directly to PostgreSQL database index
+            safe_q = clean_q.replace("%", "").replace(",", "")
+            query_res = sb.table("video_library") \
+                .select("id, title, description, tags, status, thumbnail_url, youtube_url") \
+                .or_(f"title.ilike.%{safe_q}%,description.ilike.%{safe_q}%") \
+                .limit(50) \
+                .execute()
+            raw_rows = query_res.data or []
     except Exception as exc:
-        logger.debug(f"Supabase search fallback: {exc}")
+        logger.debug(f"Supabase search query fallback: {exc}")
 
     # Also include any locally tagged videos if not in raw_rows (e.g. tests)
     existing_ids = {str(r.get("id")) for r in raw_rows}

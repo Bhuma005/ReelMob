@@ -1,4 +1,4 @@
-﻿import pytest
+import pytest
 from fastapi.testclient import TestClient
 from backend.main import app, RATE_LIMIT_STORE, LOCAL_VIDEO_TAGS
 
@@ -29,3 +29,34 @@ def test_search_with_matching_tag():
     assert data["total"] >= 1
     found = any(r["id"] == "test-search-vid-1" for r in data["results"])
     assert found
+
+
+def test_search_database_pushdown_query():
+    from unittest.mock import MagicMock, patch
+    mock_sb = MagicMock()
+    mock_table = MagicMock()
+    mock_sb.table.return_value = mock_table
+    mock_select = MagicMock()
+    mock_table.select.return_value = mock_select
+    mock_or = MagicMock()
+    mock_select.or_.return_value = mock_or
+    mock_limit = MagicMock()
+    mock_or.limit.return_value = mock_limit
+    mock_limit.execute.return_value = MagicMock(data=[{
+        "id": "vid-db-pushdown",
+        "title": "Machine Learning in 60s",
+        "description": "Shorts tutorial",
+        "tags": ["ml", "ai"],
+        "status": "published"
+    }])
+
+    with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb):
+        res = client.get("/api/dashboard/search?q=machine")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["total"] == 1
+        assert data["results"][0]["id"] == "vid-db-pushdown"
+        assert data["results"][0]["match_field"] == "title"
+        # Verify .or_ filter was executed on table query
+        assert mock_select.or_.called
+
