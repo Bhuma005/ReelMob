@@ -218,9 +218,10 @@ Generate the JSON output now."""
             "Subscribe for more content like this."
         )
     if not parsed.get("optimal_schedule_time"):
-        parsed["optimal_schedule_time"] = "07:00 PM"
-    if not parsed.get("schedule_reasoning"):
-        parsed["schedule_reasoning"] = "Evening hours (6–9 PM) show peak Shorts engagement."
+        from backend.services.scheduler import calculate_deterministic_schedule
+        sched = calculate_deterministic_schedule()
+        parsed["optimal_schedule_time"] = sched.get("human_readable_time") or "06:00 PM"
+        parsed["schedule_reasoning"] = sched.get("reason", "Deterministic scheduling.")
     if not parsed.get("youtube_hashtags") and not parsed.get("instagram_hashtags"):
         # If AI failed to generate hashtags, fallback to scraped
         fallback_tags = ["#Shorts", "#Viral", "#Trending", "#fyp", "#explore", "#foryou", "#video"]

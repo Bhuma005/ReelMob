@@ -57,6 +57,7 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
     
     opt_title = req.title
     opt_desc = req.description
+    opt_tags = req.hashtags or []
     from backend.services.scheduler import calculate_deterministic_schedule
     sched_intel = calculate_deterministic_schedule()
     default_posting_time = sched_intel.get("human_readable_time") or (

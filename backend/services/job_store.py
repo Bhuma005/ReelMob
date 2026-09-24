@@ -178,6 +178,8 @@ class JobStore(MutableMapping):
         if "job_type" not in value:
             value["job_type"] = self.default_type
 
+        if len(self._memory) >= 500:
+            self._memory.pop(next(iter(self._memory)), None)
         tracked = TrackedJob(self, key, value)
         self._memory[key] = tracked
         self._sync_to_database(key, tracked)

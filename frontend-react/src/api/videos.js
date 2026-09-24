@@ -22,7 +22,7 @@ export const videosApi = {
   getHighlights: (videoPath, url, options = {}) => fetchApi('/api/video/highlights', {
     method: 'POST',
     body: JSON.stringify({ video_path: videoPath, url, ...options })
-  }),
+  }, 2),
   getHighlightStatus: (jobId) => fetchApi(`/api/video/highlights/status/${jobId}`),
   checkDuplicate: (videoPath, threshold = 10, url = null) => fetchApi('/api/video/check-duplicate', {
     method: 'POST',
@@ -31,7 +31,7 @@ export const videosApi = {
   checkModeration: (videoPath, url = null) => fetchApi('/api/video/moderation-check', {
     method: 'POST',
     body: JSON.stringify({ video_path: videoPath, url })
-  }),
+  }, 2),
   getModerationStatus: (jobId) => fetchApi(`/api/video/moderation-check/status/${jobId}`),
   // Handles the actual browser download action
   handleFileDownload: (response) => {

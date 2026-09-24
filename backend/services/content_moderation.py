@@ -43,15 +43,16 @@ def _extract_frame_at_time(video_path: str, timestamp: float, output_path: str, 
     try:
         import cv2
         cap = cv2.VideoCapture(video_path)
-        if cap.isOpened():
-            fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-            frame_no = int(timestamp * fps)
-            cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
-            ret, frame = cap.read()
-            if ret and frame is not None:
-                cv2.imwrite(output_path, frame)
-                cap.release()
-                return True
+        try:
+            if cap.isOpened():
+                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                frame_no = int(timestamp * fps)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_no)
+                ret, frame = cap.read()
+                if ret and frame is not None:
+                    cv2.imwrite(output_path, frame)
+                    return True
+        finally:
             cap.release()
     except Exception as exc:
         logger.warning(f"OpenCV frame capture failed for {video_path} at {timestamp}s: {exc}")

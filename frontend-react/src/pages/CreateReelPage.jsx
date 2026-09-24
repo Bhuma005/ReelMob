@@ -483,6 +483,18 @@ export default function CreateReelPage() {
     );
   };
 
+  const handleDownloadCover = () => {
+    if (!store.url) return;
+    toast.promise(
+      videosApi.downloadThumbnail(store.url).then(r => videosApi.handleFileDownload(r)),
+      {
+        loading: 'Downloading cover image...',
+        success: 'Cover image downloaded!',
+        error: 'Failed to download cover image'
+      }
+    );
+  };
+
   const triggerAutomation = async () => {
     if (!appStore.isYtAuthenticated) {
       toast.error("Please connect YouTube first in Settings/Connections");
@@ -782,7 +794,7 @@ export default function CreateReelPage() {
                 <Button 
                   variant="ghost" 
                   className="w-full text-xs text-text-muted hover:text-text cursor-pointer" 
-                  onClick={() => videosApi.downloadThumbnail(store.url)}
+                  onClick={handleDownloadCover}
                 >
                   Download Cover Image
                 </Button>

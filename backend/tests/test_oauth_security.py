@@ -66,3 +66,26 @@ def test_public_base_url_rejects_untrusted_host_header(monkeypatch):
     base_url = _get_public_base_url(mock_request)
     assert base_url == "https://reelmob.onrender.com"
     assert "attacker-spoofed-domain.com" not in base_url
+
+
+def test_get_youtube_creds_loads_from_supabase(monkeypatch):
+    """Verify that get_youtube_creds falls back to the oauth_tokens table in Supabase."""
+    from unittest.mock import patch
+    from cloud.cloud_auth import get_youtube_creds
+
+    monkeypatch.setenv("GOOGLE_CLIENT_ID", "test-client-id.apps.googleusercontent.com")
+    monkeypatch.setenv("GOOGLE_CLIENT_SECRET", "test-client-secret")
+    monkeypatch.delenv("YT_REFRESH_TOKEN", raising=False)
+
+    mock_sb = MagicMock()
+    mock_sb.table.return_value.select.return_value.eq.return_value.execute.return_value.data = [
+        {"refresh_token": "supabase-stored-refresh-token", "access_token": "mock-access"}
+    ]
+
+    with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb):
+        monkeypatch.setattr("cloud.cloud_auth._CREDS_FILE", MagicMock(exists=lambda: False))
+        monkeypatch.setattr("cloud.cloud_auth._SECRETS_FILE", MagicMock(exists=lambda: False))
+        creds = get_youtube_creds()
+        assert creds["client_id"] == "test-client-id.apps.googleusercontent.com"
+        assert creds["client_secret"] == "test-client-secret"
+        assert creds["refresh_token"] == "supabase-stored-refresh-token"

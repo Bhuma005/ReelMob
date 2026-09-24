@@ -80,23 +80,25 @@ def compute_video_perceptual_hash(video_path: str, url: Optional[str] = None) ->
         try:
             import cv2
             cap = cv2.VideoCapture(resolved_path)
-            if cap.isOpened():
-                fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
-                total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
-                if duration <= 0 and total_frames > 0:
-                    duration = total_frames / fps
+            try:
+                if cap.isOpened():
+                    fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+                    total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT) or 0)
+                    if duration <= 0 and total_frames > 0:
+                        duration = total_frames / fps
 
-                # Sample at mid-point (50%)
-                mid_frame = max(0, int(total_frames * 0.5)) if total_frames > 0 else 0
-                cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
-                ret, frame = cap.read()
+                    # Sample at mid-point (50%)
+                    mid_frame = max(0, int(total_frames * 0.5)) if total_frames > 0 else 0
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, mid_frame)
+                    ret, frame = cap.read()
+
+                    if ret and frame is not None:
+                        # Convert BGR OpenCV image to RGB PIL image
+                        rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                        pil_img = Image.fromarray(rgb_frame)
+                        return compute_image_dhash(pil_img)
+            finally:
                 cap.release()
-
-                if ret and frame is not None:
-                    # Convert BGR OpenCV image to RGB PIL image
-                    rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                    pil_img = Image.fromarray(rgb_frame)
-                    return compute_image_dhash(pil_img)
         except Exception as exc:
             logger.warning(f"OpenCV frame capture for hash failed: {exc}")
 
@@ -153,6 +155,8 @@ def hamming_distance(hash1: str, hash2: str) -> int:
 
 def register_video_hash(video_id: str, title: str, hash_val: str):
     """Registers a video hash in both memory and Supabase (if configured)."""
+    if len(LOCAL_HASH_REGISTRY) >= 1000:
+        LOCAL_HASH_REGISTRY.pop(next(iter(LOCAL_HASH_REGISTRY)), None)
     LOCAL_HASH_REGISTRY[video_id] = {
         "id": video_id,
         "title": title,

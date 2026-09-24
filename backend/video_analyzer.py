@@ -59,27 +59,29 @@ def extract_video_frames(
     try:
         import cv2
         cap = cv2.VideoCapture(video_path)
-        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        if total_frames > 0:
-            positions = [0.08, 0.28, 0.50, 0.72, 0.92][:num_frames]
-            for i, pos in enumerate(positions):
-                frame_idx = int(total_frames * pos)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
-                ret, frame = cap.read()
-                if ret and frame is not None:
-                    h, w = frame.shape[:2]
-                    if max(h, w) > max_dim:
-                        scale = max_dim / max(h, w)
-                        frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
-                    ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
-                    if ret_enc:
-                        frames_b64.append(base64.b64encode(buf).decode('utf-8'))
-                if progress_callback:
-                    pct = 30 + int(((i + 1) / len(positions)) * 20)
-                    progress_callback(pct, f'Extracting frame {i + 1} of {len(positions)}...')
+        try:
+            total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+            if total_frames > 0:
+                positions = [0.08, 0.28, 0.50, 0.72, 0.92][:num_frames]
+                for i, pos in enumerate(positions):
+                    frame_idx = int(total_frames * pos)
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_idx)
+                    ret, frame = cap.read()
+                    if ret and frame is not None:
+                        h, w = frame.shape[:2]
+                        if max(h, w) > max_dim:
+                            scale = max_dim / max(h, w)
+                            frame = cv2.resize(frame, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                        ret_enc, buf = cv2.imencode('.jpg', frame, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        if ret_enc:
+                            frames_b64.append(base64.b64encode(buf).decode('utf-8'))
+                    if progress_callback:
+                        pct = 30 + int(((i + 1) / len(positions)) * 20)
+                        progress_callback(pct, f'Extracting frame {i + 1} of {len(positions)}...')
+        finally:
             cap.release()
-            if frames_b64:
-                return frames_b64
+        if frames_b64:
+            return frames_b64
     except Exception as e:
         logger.debug(f'cv2 frame extraction skipped: {e}')
 
@@ -330,6 +332,8 @@ def analyze_video_content(
         'vision_error': vision_error if not vision_success else None
     }
 
+    if len(VIDEO_ANALYSIS_CACHE) >= 100:
+        VIDEO_ANALYSIS_CACHE.pop(next(iter(VIDEO_ANALYSIS_CACHE)), None)
     VIDEO_ANALYSIS_CACHE[cache_key] = result
     return result
 

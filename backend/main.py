@@ -174,6 +174,13 @@ async def rate_limit_middleware(request: Request, call_next):
 
     history.append(now)
     RATE_LIMIT_STORE[client_ip] = history
+
+    # Memory leak protection: periodically prune expired IP buckets
+    if len(RATE_LIMIT_STORE) > 1000:
+        expired_ips = [ip for ip, times in RATE_LIMIT_STORE.items() if not times or now - times[-1] >= RATE_LIMIT_SECONDS]
+        for ip in expired_ips:
+            RATE_LIMIT_STORE.pop(ip, None)
+
     return await call_next(request)
 
 
@@ -447,9 +454,7 @@ async def download_video(req: DownloadRequest, request: Request):
                         out_w = v_stream.get('width', 0)
                         out_h = v_stream.get('height', 0)
                         dar = v_stream.get('display_aspect_ratio', 'Unknown')
-                        from datetime import datetime
-                        with open("reelgrab_audit.log", "a", encoding='utf-8') as log_file:
-                            log_file.write(f"[{datetime.now().isoformat()}] DOWNLOAD VERIFIED | OUTPUT: {out_w}x{out_h} | DAR: {dar} | MODE: original | FILE: {final_filename}\n")
+                        logger.info(f"DOWNLOAD VERIFIED | OUTPUT: {out_w}x{out_h} | DAR: {dar} | MODE: original | FILE: {final_filename}")
             except Exception as e:
                 logger.error(f"FFprobe verification failed: {e}")
 
@@ -675,6 +680,8 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         job["fallback_reason"] = result_payload.get("fallback_reason")
 
         if content_hash:
+            if len(AI_CACHE_STORE) >= 500:
+                AI_CACHE_STORE.pop(next(iter(AI_CACHE_STORE)), None)
             AI_CACHE_STORE[content_hash] = result_payload
 
     except Exception as e:
@@ -855,23 +862,41 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
         except Exception as sbe:
             logger.warning(f"Could not seed initial job in Supabase: {sbe}")
 
-        # Dispatch event to GitHub repository
-        await asyncio.to_thread(
-            dispatch_github_actions_analysis,
-            job_id=job_id,
-            video_url=req.url or "",
-            title=req.title or "",
-            description=req.description or "",
-            content_hash=content_hash
-        )
-
-        return {
-            "job_id": job_id,
-            "status": "QUEUED",
-            "progress": 5,
-            "current_step": initial_step,
-            "processed_by": "github_actions"
-        }
+        # Dispatch event to GitHub repository with fallback to local execution
+        try:
+            await asyncio.to_thread(
+                dispatch_github_actions_analysis,
+                job_id=job_id,
+                video_url=req.url or "",
+                title=req.title or "",
+                description=req.description or "",
+                content_hash=content_hash
+            )
+            return {
+                "job_id": job_id,
+                "status": "QUEUED",
+                "progress": 5,
+                "current_step": initial_step,
+                "processed_by": "github_actions"
+            }
+        except Exception as dispatch_err:
+            logger.warning(f"GitHub Actions dispatch failed: {dispatch_err}. Falling back to local execution.")
+            background_tasks.add_task(
+                execute_ai_analysis_job,
+                job_id=job_id,
+                url=req.url,
+                title=req.title,
+                description=req.description,
+                video_path=req.video_path,
+                content_hash=content_hash
+            )
+            return {
+                "job_id": job_id,
+                "status": "QUEUED",
+                "progress": 10,
+                "current_step": "Queued for local processing (offload fallback)",
+                "processed_by": "local"
+            }
 
     # ── Path B: Local Processing (Background Task) ────────────────────────────
     job_id = f"ai_{uuid.uuid4().hex[:8]}"
@@ -1206,12 +1231,12 @@ async def delete_dashboard_video(video_id: str):
     from datetime import datetime, timezone
     clean_video_id = sanitize_filename_or_id(video_id)
     if not clean_video_id:
-        return {"status": "error", "message": "Invalid video_id"}
+        raise HTTPException(status_code=400, detail="Invalid video_id")
     try:
         sb = get_supabase_client()
         res = sb.table("video_library").select("storage_path, title").eq("id", clean_video_id).execute()
         if not res.data:
-            return {"status": "error", "message": "Video not found"}
+            raise HTTPException(status_code=404, detail="Video not found")
 
         storage_path = res.data[0].get("storage_path")
         title = res.data[0].get("title")
@@ -1246,11 +1271,13 @@ async def delete_dashboard_video(video_id: str):
             logger.debug(f"Activity log write skipped: {log_err}")
 
         return {"status": "success", "message": "Video storage purged; library metadata preserved permanently as cleaned"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Failed to delete video: {e}")
         err = traceback.format_exc()
         logger.error(f"Delete video error trace: {err}")
-        return {"status": "error", "message": repr(e)}
+        raise HTTPException(status_code=500, detail=f"Failed to delete video: {str(e)}")
 
 
 @app.post("/api/dashboard/videos/{video_id}/convert", summary="Convert Aspect Ratio")
@@ -1263,7 +1290,7 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
 
     clean_video_id = sanitize_filename_or_id(video_id)
     if not clean_video_id:
-        return {"status": "error", "message": "Invalid video_id"}
+        raise HTTPException(status_code=400, detail="Invalid video_id")
 
     ratio_map = {
         "9:16": (1080, 1920),
@@ -1272,20 +1299,20 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         "16:9": (1920, 1080)
     }
     if req.ratio not in ratio_map:
-        return {"status": "error", "message": "Invalid ratio"}
+        raise HTTPException(status_code=400, detail="Invalid ratio")
     W, H = ratio_map[req.ratio]
 
+    temp_in = f"downloads/conv_in_{uuid.uuid4().hex}.mp4"
+    temp_out = f"downloads/conv_out_{uuid.uuid4().hex}.mp4"
     try:
         sb = get_supabase_client()
         res = sb.table("video_library").select("storage_path").eq("id", clean_video_id).execute()
         if not res.data:
-            return {"status": "error", "message": "Video not found"}
+            raise HTTPException(status_code=404, detail="Video not found")
 
         storage_path = res.data[0].get("storage_path")
 
-        # 1. Download the original video completely to memory or disk
-        temp_in = f"downloads/conv_in_{uuid.uuid4().hex}.mp4"
-        temp_out = f"downloads/conv_out_{uuid.uuid4().hex}.mp4"
+        # 1. Download the original video completely to disk
         os.makedirs("downloads", exist_ok=True)
 
         with open(temp_in, "wb") as f:
@@ -1314,24 +1341,31 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         process = await asyncio.to_thread(run_ffmpeg)
 
         if process.returncode != 0:
-            logger.error(f"FFmpeg error: {process.stderr.decode()}")
-            return {"status": "error", "message": "FFmpeg conversion failed: " + process.stderr.decode()[:200]}
+            err_msg = process.stderr.decode()
+            logger.error(f"FFmpeg error: {err_msg}")
+            raise HTTPException(status_code=500, detail=f"FFmpeg conversion failed: {err_msg[:200]}")
 
         # 3. Upload overwritten video back to Supabase
         sb.storage.from_("reelgrab-videos").remove([storage_path])
         with open(temp_out, "rb") as f:
             sb.storage.from_("reelgrab-videos").upload(storage_path, f, file_options={"content-type": "video/mp4"})
 
-        # Cleanup
-        if os.path.exists(temp_in): os.remove(temp_in)
-        if os.path.exists(temp_out): os.remove(temp_out)
-
         return {"status": "success", "message": "Converted"}
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Convert error: {e}")
         err = traceback.format_exc()
         logger.error(f"Convert error trace: {err}")
-        return {"status": "error", "message": repr(e)}
+        raise HTTPException(status_code=500, detail=f"Convert error: {str(e)}")
+    finally:
+        # Always cleanup temp files to prevent disk leak
+        if os.path.exists(temp_in):
+            try: os.remove(temp_in)
+            except Exception: pass
+        if os.path.exists(temp_out):
+            try: os.remove(temp_out)
+            except Exception: pass
 
 
 @app.post("/api/video/edit", summary="In-App Video Editor (Trim, Color, Captions, Watermark, Framing)")
@@ -1455,6 +1489,34 @@ def execute_highlight_job(
         job["error"] = str(exc)
 
 
+async def _run_highlight_job_in_thread(
+    job_id: str,
+    video_path: Optional[str],
+    target_duration_min: float,
+    target_duration_max: float,
+    num_clips: int,
+    url: Optional[str]
+):
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                execute_highlight_job,
+                job_id,
+                video_path,
+                target_duration_min,
+                target_duration_max,
+                num_clips,
+                url
+            ),
+            timeout=120.0
+        )
+    except asyncio.TimeoutError:
+        job = HIGHLIGHT_JOBS.get(job_id)
+        if job:
+            job['status'] = 'FAILED'
+            job['error'] = 'Highlight detection timed out after 120 seconds. Please try with a shorter video.'
+            logger.warning(f'Highlight job {job_id} timed out after 120s')
+
 @app.post("/api/video/highlights", summary="Multi-Clip Highlight Detection (Async Job)")
 async def create_highlights_job(req: HighlightRequest, background_tasks: BackgroundTasks):
     job_id = str(uuid.uuid4())
@@ -1466,7 +1528,7 @@ async def create_highlights_job(req: HighlightRequest, background_tasks: Backgro
         "created_at": datetime.now().isoformat()
     }
     background_tasks.add_task(
-        execute_highlight_job,
+        _run_highlight_job_in_thread,
         job_id=job_id,
         video_path=req.video_path,
         target_duration_min=req.target_duration_min,
@@ -1577,6 +1639,28 @@ def execute_moderation_job(
         job["error"] = str(exc)
 
 
+async def _run_moderation_job_in_thread(
+    job_id: str,
+    video_path: Optional[str],
+    url: Optional[str]
+):
+    try:
+        await asyncio.wait_for(
+            asyncio.to_thread(
+                execute_moderation_job,
+                job_id,
+                video_path,
+                url
+            ),
+            timeout=90.0
+        )
+    except asyncio.TimeoutError:
+        job = MODERATION_JOBS.get(job_id)
+        if job:
+            job['status'] = 'FAILED'
+            job['error'] = 'Moderation check timed out after 90 seconds. Please try with a shorter video.'
+            logger.warning(f'Moderation job {job_id} timed out after 90s')
+
 @app.post("/api/video/moderation-check", summary="Content Moderation & Watermark Detection (Async Job)")
 async def create_moderation_job(req: ModerationCheckRequest, background_tasks: BackgroundTasks):
     """
@@ -1593,7 +1677,7 @@ async def create_moderation_job(req: ModerationCheckRequest, background_tasks: B
         "created_at": datetime.now().isoformat()
     }
     background_tasks.add_task(
-        execute_moderation_job,
+        _run_moderation_job_in_thread,
         job_id=job_id,
         video_path=req.video_path,
         url=req.url
@@ -1639,6 +1723,8 @@ async def update_video_tags_endpoint(video_id: str, req: UpdateVideoTagsRequest)
     if not clean_id:
         raise HTTPException(status_code=400, detail="Invalid video_id")
 
+    if len(LOCAL_VIDEO_TAGS) >= 1000:
+        LOCAL_VIDEO_TAGS.pop(next(iter(LOCAL_VIDEO_TAGS)), None)
     LOCAL_VIDEO_TAGS[clean_id] = req.tags
 
     # Attempt Supabase update
@@ -1780,7 +1866,7 @@ async def publish_dashboard_video(video_id: str):
 
     clean_video_id = sanitize_filename_or_id(video_id)
     if not clean_video_id:
-        return {"status": "error", "message": "Invalid video_id"}
+        raise HTTPException(status_code=400, detail="Invalid video_id")
 
     try:
         try:
@@ -1788,19 +1874,19 @@ async def publish_dashboard_video(video_id: str):
             from googleapiclient.http import MediaFileUpload
             from google.oauth2.credentials import Credentials
         except ImportError:
-            return {"status": "error", "message": "Google API packages missing (pip install google-api-python-client google-auth-oauthlib)"}
+            raise HTTPException(status_code=500, detail="Google API packages missing (pip install google-api-python-client google-auth-oauthlib)")
 
         sb = get_supabase_client()
         res = sb.table("video_library").select("*").eq("id", clean_video_id).execute()
         if not res.data:
-            return {"status": "error", "message": "Video not found in library"}
+            raise HTTPException(status_code=404, detail="Video not found in library")
 
         video = res.data[0]
         if video.get("status") in ["published", "delete_pending", "cleaned"] or video.get("youtube_video_id"):
-            return {"status": "error", "message": "Already published!"}
+            raise HTTPException(status_code=400, detail="Already published!")
 
         if not video.get("storage_path"):
-            return {"status": "error", "message": "Video file is missing from cloud storage"}
+            raise HTTPException(status_code=400, detail="Video file is missing from cloud storage")
 
         sb.table("video_activity_log").insert({
             "video_id": clean_video_id,
@@ -1815,7 +1901,7 @@ async def publish_dashboard_video(video_id: str):
         try:
             creds_data = get_youtube_creds()
         except Exception:
-            return {"status": "error", "message": "YouTube Credentials not configured in .env"}
+            raise HTTPException(status_code=500, detail="YouTube Credentials not configured in .env")
 
         creds = Credentials(
             token=None,
@@ -1894,9 +1980,11 @@ async def publish_dashboard_video(video_id: str):
             if os.path.exists(tmp_path):
                 os.remove(tmp_path)
 
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Publish error: {e}")
-        return {"status": "error", "message": str(e) + " - " + traceback.format_exc()[:200]}
+        raise HTTPException(status_code=500, detail=f"Publish error: {str(e)}")
 
 
 @app.get("/api/dashboard/logs", summary="Get audit logs", description="Returns structured Supabase activity events and audit log history.")

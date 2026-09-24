@@ -274,7 +274,11 @@ async def run_video_analysis(
                 "analysis_source": "caption_fallback",
                 "video_analyzed": False
             },
-            "posting": {"scheduled_time": "19:30", "score": 95, "reason": "Standard peak evening engagement slot."}
+            "posting": {
+                "scheduled_time": calculate_deterministic_schedule().get("human_readable_time") or "06:00 PM",
+                "score": 75,
+                "reason": "Deterministic scheduling fallback."
+            }
         })
 
     metadata = final_state.get("metadata", {})

@@ -19,9 +19,10 @@ export async function fetchApi(endpoint, options = {}, retries = 1) {
     throw netErr;
   }
 
-  // Auto-retry transient 429 (Too Many Requests) once with backoff
-  if (response.status === 429 && retries > 0) {
-    await new Promise(r => setTimeout(r, 1800));
+  // Auto-retry transient server errors once with backoff
+  if ((response.status === 429 || response.status === 502 || response.status === 504) && retries > 0) {
+    const delay = response.status === 429 ? 1800 : 2500;
+    await new Promise(r => setTimeout(r, delay));
     return fetchApi(endpoint, options, retries - 1);
   }
 
@@ -56,7 +57,11 @@ export async function fetchApi(endpoint, options = {}, retries = 1) {
   // Not all endpoints return JSON (e.g. downloads)
   const contentType = response.headers.get('content-type');
   if (contentType && contentType.includes('application/json')) {
-    return await response.json();
+    const data = await response.json();
+    if (data && typeof data === 'object' && data.status === 'error') {
+      throw new Error(data.message || 'Operation failed');
+    }
+    return data;
   }
   return response;
 }
