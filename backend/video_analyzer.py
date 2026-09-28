@@ -290,7 +290,7 @@ def analyze_video_content(
                 if cloud_vision.get('success'):
                     visual_description = cloud_vision['visual_summary']
                     vision_success = True
-                    vision_model = cloud_vision.get('model') or get_installed_vision_model() or 'gemini-2.0-flash'
+                    vision_model = cloud_vision.get('model') or get_installed_vision_model() or 'gemini-3.6-flash'
                     logger.info(f'Gemini Cloud Vision analysis completed: {visual_description[:100]}...')
                 else:
                     vision_error = cloud_vision.get('error')
