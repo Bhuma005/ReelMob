@@ -17,8 +17,10 @@ export const dashboardApi = {
     return fetchApi(`/api/dashboard/videos${qs ? `?${qs}` : ''}`);
   },
   getLogs: () => fetchApi('/api/dashboard/logs'),
+  clearLogs: () => fetchApi('/api/dashboard/logs/clear', { method: 'POST' }),
+  clearCleanedVideos: () => fetchApi('/api/dashboard/videos/clear-cleaned', { method: 'POST' }),
   getRecommendation: () => fetchApi('/api/scheduling/recommendation'),
-  deleteVideo: (id) => fetchApi(`/api/dashboard/videos/${id}`, { method: 'DELETE' }),
+  deleteVideo: (id, permanent = false) => fetchApi(`/api/dashboard/videos/${id}${permanent ? '?permanent=true' : ''}`, { method: 'DELETE' }),
   convertVideo: (id, ratio) => fetchApi(`/api/dashboard/videos/${id}/convert`, {
     method: 'POST',
     body: JSON.stringify({ ratio })

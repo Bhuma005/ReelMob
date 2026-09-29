@@ -11,12 +11,15 @@ import {
 import { format } from 'date-fns';
 import { toast } from 'sonner';
 import { cn } from '../lib/utils';
+import { ConfirmDialog } from '../components/ui/ConfirmDialog';
 
 export default function LogsPage() {
   const [activeTab, setActiveTab] = useState('activity'); // 'activity' | 'raw'
   const [searchTerm, setSearchTerm] = useState('');
   const [filterType, setFilterType] = useState('ALL'); // 'ALL' | 'SUCCESS' | 'FAILED' | 'DELETED'
   const [expandedRowId, setExpandedRowId] = useState(null);
+  const [isClearing, setIsClearing] = useState(false);
+  const [showClearConfirm, setShowClearConfirm] = useState(false);
 
   const { data: logsData, isLoading, refetch, isFetching } = useQuery({
     queryKey: ['dashboardLogs'],
@@ -84,6 +87,20 @@ export default function LogsPage() {
     return text.replace(/(key|token|secret|password)=([a-zA-Z0-9_-]+)/gi, '$1=••••••••');
   };
 
+  const handleClearLogs = async () => {
+    setIsClearing(true);
+    try {
+      await dashboardApi.clearLogs();
+      toast.success("Activity and engine audit logs cleared");
+      refetch();
+    } catch (e) {
+      toast.error("Failed to clear logs: " + (e.message || "Unknown error"));
+    } finally {
+      setIsClearing(false);
+      setShowClearConfirm(false);
+    }
+  };
+
   return (
     <div className="space-y-5 max-w-6xl mx-auto pb-20">
       {/* Header */}
@@ -129,6 +146,17 @@ export default function LogsPage() {
           >
             <RefreshCw className={cn("w-3.5 h-3.5", isFetching && "animate-spin")} />
             Refresh
+          </Button>
+
+          <Button 
+            variant="outline" 
+            size="sm" 
+            onClick={() => setShowClearConfirm(true)} 
+            className="text-xs flex items-center gap-1 border-danger/40 text-danger hover:bg-danger/10 hover:border-danger cursor-pointer"
+            title="Clear all activity events and audit logs"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            Clear Logs
           </Button>
         </div>
       </div>
@@ -322,6 +350,18 @@ export default function LogsPage() {
           </CardContent>
         </Card>
       )}
+
+      {/* Clear Logs Confirmation Modal */}
+      <ConfirmDialog
+        isOpen={showClearConfirm}
+        title="Clear Activity & Engine Logs"
+        description="Are you sure you want to clear all cloud activity events and engine audit logs? This cannot be undone."
+        confirmText="Clear All Logs"
+        confirmVariant="danger"
+        isLoading={isClearing}
+        onConfirm={handleClearLogs}
+        onClose={() => setShowClearConfirm(false)}
+      />
     </div>
   );
 }

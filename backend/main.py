@@ -1080,6 +1080,8 @@ async def get_dashboard_videos(
 
         if status and status.lower() != 'all':
             query = query.eq("status", status.lower())
+        else:
+            query = query.neq("status", "cleaned")
 
         if search and search.strip():
             query = query.ilike("title", f"%{search.strip()}%")
@@ -1231,8 +1233,8 @@ async def stream_dashboard_video(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.delete("/api/dashboard/videos/{video_id}", summary="Delete / Purge video storage", description="Purges raw video storage while permanently preserving video metadata as cleaned.")
-async def delete_dashboard_video(video_id: str):
+@app.delete("/api/dashboard/videos/{video_id}", summary="Delete / Purge video storage", description="Purges raw video storage while soft-deleting metadata. If permanent=true or already cleaned, permanently deletes row.")
+async def delete_dashboard_video(video_id: str, permanent: bool = False):
     from cloud.cloud_auth import get_supabase_client
     from datetime import datetime, timezone
     clean_video_id = sanitize_filename_or_id(video_id)
@@ -1240,12 +1242,13 @@ async def delete_dashboard_video(video_id: str):
         raise HTTPException(status_code=400, detail="Invalid video_id")
     try:
         sb = get_supabase_client()
-        res = sb.table("video_library").select("storage_path, title").eq("id", clean_video_id).execute()
+        res = sb.table("video_library").select("storage_path, title, status").eq("id", clean_video_id).execute()
         if not res.data:
             raise HTTPException(status_code=404, detail="Video not found")
 
         storage_path = res.data[0].get("storage_path")
         title = res.data[0].get("title")
+        current_status = res.data[0].get("status")
 
         if storage_path:
             try:
@@ -1259,7 +1262,12 @@ async def delete_dashboard_video(video_id: str):
         except Exception as sqle:
             logger.warning(f"Could not remove scheduled_videos entry: {sqle}")
 
-        # Permanently retain metadata row in video_library, updating status to 'cleaned'
+        # If permanent=True OR if the video was already cleaned: permanently delete from DB
+        if permanent or current_status == "cleaned":
+            sb.table("video_library").delete().eq("id", clean_video_id).execute()
+            return {"status": "success", "message": f"Video '{title}' permanently deleted from library"}
+
+        # Soft-delete to 'cleaned' for active videos
         now_iso = datetime.now(timezone.utc).isoformat()
         sb.table("video_library").update({
             "status": "cleaned",
@@ -1276,7 +1284,7 @@ async def delete_dashboard_video(video_id: str):
         except Exception as log_err:
             logger.debug(f"Activity log write skipped: {log_err}")
 
-        return {"status": "success", "message": "Video storage purged; library metadata preserved permanently as cleaned"}
+        return {"status": "success", "message": "Video storage purged; moved to archive"}
     except HTTPException:
         raise
     except Exception as e:
@@ -1284,6 +1292,30 @@ async def delete_dashboard_video(video_id: str):
         err = traceback.format_exc()
         logger.error(f"Delete video error trace: {err}")
         raise HTTPException(status_code=500, detail=f"Failed to delete video: {str(e)}")
+
+
+@app.post("/api/dashboard/videos/clear-cleaned", summary="Clear all cleaned/archived videos")
+@app.delete("/api/dashboard/videos/cleaned", summary="Clear all cleaned/archived videos")
+async def clear_all_cleaned_videos():
+    from cloud.cloud_auth import get_supabase_client
+    try:
+        sb = get_supabase_client()
+        res = sb.table("video_library").select("id").eq("status", "cleaned").execute()
+        cleaned_ids = [r["id"] for r in (res.data or [])]
+        if cleaned_ids:
+            try:
+                sb.table("scheduled_videos").delete().in_("library_video_id", cleaned_ids).execute()
+            except Exception:
+                pass
+            sb.table("video_library").delete().in_("id", cleaned_ids).execute()
+        return {
+            "status": "success",
+            "deleted_count": len(cleaned_ids),
+            "message": f"Successfully cleared {len(cleaned_ids)} archived videos from database"
+        }
+    except Exception as e:
+        logger.error(f"Failed to clear cleaned videos: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear cleaned videos: {str(e)}")
 
 
 @app.post("/api/dashboard/videos/{video_id}/convert", summary="Convert Aspect Ratio")
@@ -2056,6 +2088,29 @@ async def get_dashboard_logs(limit: int = 50):
         "activity_events": activity_events,
         "logs": local_logs[:limit]
     }
+
+
+@app.post("/api/dashboard/logs/clear", summary="Clear activity and audit logs")
+@app.delete("/api/dashboard/logs/clear", summary="Clear activity and audit logs")
+async def clear_dashboard_logs():
+    from cloud.cloud_auth import get_supabase_client
+    import os
+    try:
+        sb = get_supabase_client()
+        try:
+            # Delete all activity events
+            sb.table("video_activity_log").delete().neq("id", "00000000-0000-0000-0000-000000000000").execute()
+        except Exception as sqle:
+            logger.debug(f"Clear activity log table skipped or failed: {sqle}")
+
+        log_path = "reelgrab_audit.log"
+        if os.path.exists(log_path):
+            with open(log_path, "w", encoding="utf-8") as f:
+                f.write("")
+        return {"status": "success", "message": "Activity and engine logs cleared"}
+    except Exception as e:
+        logger.error(f"Failed to clear logs: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to clear logs: {str(e)}")
 
 
 HEALTH_CACHE = {

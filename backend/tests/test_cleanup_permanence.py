@@ -148,3 +148,101 @@ def test_workflow_cleanup_retains_library_record():
         update_args = mock_lib_table.update.call_args[0][0]
         assert update_args["status"] == "cleaned"
         assert update_args["storage_path"] is None
+
+
+def test_delete_dashboard_video_permanent_deletes_record(client):
+    """Verify that deleting with permanent=True or when already cleaned deletes row from video_library."""
+    mock_sb = MagicMock()
+    mock_lib_table = MagicMock()
+    mock_sv_table = MagicMock()
+
+    def table_router(table_name):
+        if table_name == "video_library":
+            return mock_lib_table
+        elif table_name == "scheduled_videos":
+            return mock_sv_table
+        return MagicMock()
+
+    mock_sb.table.side_effect = table_router
+
+    # Video lookup returns already-cleaned record
+    mock_select = MagicMock()
+    mock_lib_table.select.return_value = mock_select
+    mock_eq = MagicMock()
+    mock_select.eq.return_value = mock_eq
+    mock_eq.execute.return_value = MagicMock(data=[{
+        "storage_path": None,
+        "title": "Cleaned Video",
+        "status": "cleaned"
+    }])
+
+    # Delete mock
+    mock_delete = MagicMock()
+    mock_lib_table.delete.return_value = mock_delete
+    mock_del_eq = MagicMock()
+    mock_delete.eq.return_value = mock_del_eq
+    mock_del_eq.execute.return_value = MagicMock(data=[{}])
+
+    with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb):
+        res = client.delete("/api/dashboard/videos/vid-perm-cleaned")
+        assert res.status_code == 200
+        assert "permanently deleted" in res.json()["message"]
+        assert mock_lib_table.delete.called
+
+
+def test_clear_all_cleaned_videos_endpoint(client):
+    """Verify that POST /api/dashboard/videos/clear-cleaned deletes all cleaned records."""
+    mock_sb = MagicMock()
+    mock_lib_table = MagicMock()
+    mock_sv_table = MagicMock()
+
+    def table_router(table_name):
+        if table_name == "video_library":
+            return mock_lib_table
+        elif table_name == "scheduled_videos":
+            return mock_sv_table
+        return MagicMock()
+
+    mock_sb.table.side_effect = table_router
+
+    # Lookup returns 3 cleaned video ids
+    mock_select = MagicMock()
+    mock_lib_table.select.return_value = mock_select
+    mock_eq = MagicMock()
+    mock_select.eq.return_value = mock_eq
+    mock_eq.execute.return_value = MagicMock(data=[
+        {"id": "id-1"}, {"id": "id-2"}, {"id": "id-3"}
+    ])
+
+    # Delete in mock
+    mock_delete = MagicMock()
+    mock_lib_table.delete.return_value = mock_delete
+    mock_in = MagicMock()
+    mock_delete.in_.return_value = mock_in
+    mock_in.execute.return_value = MagicMock(data=[{}])
+
+    with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb):
+        res = client.post("/api/dashboard/videos/clear-cleaned")
+        assert res.status_code == 200
+        data = res.json()
+        assert data["status"] == "success"
+        assert data["deleted_count"] == 3
+
+
+def test_clear_activity_logs_endpoint(client):
+    """Verify that POST /api/dashboard/logs/clear clears activity logs."""
+    mock_sb = MagicMock()
+    mock_log_table = MagicMock()
+
+    mock_sb.table.return_value = mock_log_table
+    mock_delete = MagicMock()
+    mock_log_table.delete.return_value = mock_delete
+    mock_neq = MagicMock()
+    mock_delete.neq.return_value = mock_neq
+    mock_neq.execute.return_value = MagicMock(data=[{}])
+
+    with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb):
+        res = client.post("/api/dashboard/logs/clear")
+        assert res.status_code == 200
+        assert res.json()["status"] == "success"
+

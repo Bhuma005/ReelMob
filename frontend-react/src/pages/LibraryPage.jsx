@@ -232,6 +232,8 @@ export default function LibraryPage() {
   const [deletingVideo, setDeletingVideo] = useState(null);
   const [isBulkDeleting, setIsBulkDeleting] = useState(false);
   const [isBulkTagging, setIsBulkTagging] = useState(false);
+  const [isClearingArchived, setIsClearingArchived] = useState(false);
+  const [showClearArchivedConfirm, setShowClearArchivedConfirm] = useState(false);
 
   const limit = viewMode === 'grid' ? 12 : 20;
 
@@ -251,8 +253,13 @@ export default function LibraryPage() {
 
   // Optimistic Deletion Mutation
   const deleteMutation = useMutation({
-    mutationFn: (id) => dashboardApi.deleteVideo(id),
-    onMutate: async (deletedId) => {
+    mutationFn: (target) => {
+      const id = typeof target === 'object' ? target.id : target;
+      const permanent = typeof target === 'object' ? Boolean(target.permanent) : false;
+      return dashboardApi.deleteVideo(id, permanent);
+    },
+    onMutate: async (target) => {
+      const deletedId = typeof target === 'object' ? target.id : target;
       await queryClient.cancelQueries(['dashboardVideos']);
       const previousData = queryClient.getQueryData(['dashboardVideos', page, limit, activeStatus, debouncedSearch]);
       
@@ -265,14 +272,14 @@ export default function LibraryPage() {
       }
       return { previousData };
     },
-    onError: (err, deletedId, context) => {
+    onError: (err, target, context) => {
       if (context?.previousData) {
         queryClient.setQueryData(['dashboardVideos', page, limit, activeStatus, debouncedSearch], context.previousData);
       }
       toast.error(err.message || 'Failed to delete video');
     },
-    onSuccess: () => {
-      toast.success('Video removed from library');
+    onSuccess: (res) => {
+      toast.success(res?.message || 'Video removed from library');
       setDeletingVideo(null);
       if (previewVideo) setPreviewVideo(null);
       queryClient.invalidateQueries(['dashboardVideos']);
@@ -280,12 +287,30 @@ export default function LibraryPage() {
     }
   });
 
+  const handleClearArchived = async () => {
+    setIsClearingArchived(true);
+    try {
+      const res = await dashboardApi.clearCleanedVideos();
+      toast.success(res.message || 'Archived videos cleared from database');
+      queryClient.invalidateQueries(['dashboardVideos']);
+      queryClient.invalidateQueries(['dashboardStats']);
+    } catch (err) {
+      toast.error('Failed to clear archived videos: ' + (err.message || 'Unknown error'));
+    } finally {
+      setIsClearingArchived(false);
+      setShowClearArchivedConfirm(false);
+    }
+  };
+
   // Bulk Delete
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
     try {
       const results = await Promise.allSettled(
-        selectedIds.map(id => dashboardApi.deleteVideo(id))
+        selectedIds.map(id => {
+          const vid = rawVideos.find(v => v.id === id);
+          return dashboardApi.deleteVideo(id, vid?.status === 'cleaned');
+        })
       );
       const successful = results.filter(r => r.status === 'fulfilled').length;
       toast.success(`Deleted ${successful} of ${selectedIds.length} videos`);
@@ -566,24 +591,38 @@ export default function LibraryPage() {
 
       {/* Filter Tabs & Bulk Actions Bar */}
       <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4">
-        <div className="flex flex-wrap gap-1.5 p-1 bg-surface rounded-lg border border-border w-fit">
-          {statusTabs.map((tab) => (
-            <button
-              key={tab.key}
-              onClick={() => {
-                setActiveStatus(tab.key);
-                setPage(1);
-              }}
-              className={cn(
-                "px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer",
-                activeStatus === tab.key 
-                  ? "bg-accent text-accent-foreground shadow-xs" 
-                  : "text-text-muted hover:text-text"
-              )}
-            >
-              {tab.label}
-            </button>
-          ))}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className="flex flex-wrap gap-1.5 p-1 bg-surface rounded-lg border border-border w-fit">
+            {statusTabs.map((tab) => (
+              <button
+                key={tab.key}
+                onClick={() => {
+                  setActiveStatus(tab.key);
+                  setPage(1);
+                }}
+                className={cn(
+                  "px-3 py-1.5 text-xs font-semibold rounded-md transition-all cursor-pointer",
+                  activeStatus === tab.key 
+                    ? "bg-accent text-accent-foreground shadow-xs" 
+                    : "text-text-muted hover:text-text"
+                )}
+              >
+                {tab.label}
+              </button>
+            ))}
+          </div>
+
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => setShowClearArchivedConfirm(true)}
+            className="text-xs h-8 border-danger/40 text-danger hover:bg-danger/10 hover:border-danger cursor-pointer flex items-center gap-1.5"
+            title="Permanently remove all unwanted archived videos from the database"
+          >
+            <Trash2 className="w-3.5 h-3.5" />
+            <span>Clear Archived</span>
+          </Button>
         </div>
 
         {/* Bulk Action Controls */}
@@ -1171,13 +1210,29 @@ export default function LibraryPage() {
       {/* Single Delete Confirmation Dialog */}
       <ConfirmDialog
         isOpen={Boolean(deletingVideo)}
-        title="Delete this video?"
-        description={`This will permanently delete "${deletingVideo?.title || 'this video'}" from Supabase Cloud Storage and database.`}
-        confirmText="Delete Video"
+        title={deletingVideo?.status === 'cleaned' ? "Permanently delete archived video?" : "Delete this video?"}
+        description={
+          deletingVideo?.status === 'cleaned'
+            ? `This will permanently delete "${deletingVideo?.title || 'this video'}" from the database. This action cannot be undone.`
+            : `This will remove "${deletingVideo?.title || 'this video'}" and purge its media from cloud storage.`
+        }
+        confirmText={deletingVideo?.status === 'cleaned' ? "Permanently Delete" : "Delete Video"}
         confirmVariant="danger"
         isLoading={deleteMutation.isPending}
         onClose={() => setDeletingVideo(null)}
-        onConfirm={() => deletingVideo && deleteMutation.mutate(deletingVideo.id)}
+        onConfirm={() => deletingVideo && deleteMutation.mutate({ id: deletingVideo.id, permanent: deletingVideo.status === 'cleaned' })}
+      />
+
+      {/* Clear All Archived Confirmation Dialog */}
+      <ConfirmDialog
+        isOpen={showClearArchivedConfirm}
+        title="Clear All Archived Videos?"
+        description="This will permanently delete all archived/cleaned video records from the database. This action cannot be undone."
+        confirmText="Clear All Archived"
+        confirmVariant="danger"
+        isLoading={isClearingArchived}
+        onClose={() => setShowClearArchivedConfirm(false)}
+        onConfirm={handleClearArchived}
       />
 
       {/* Bulk Tag Dialog */}
