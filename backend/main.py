@@ -125,16 +125,79 @@ async def request_context_middleware(request: Request, call_next):
 
 
 def get_client_ip(request: Request) -> str:
-    """Extract real client IP considering reverse proxy headers (Render, Cloudflare, ALB)."""
+    """Extract real client IP considering reverse proxy headers (Cloudflare, Render, ALB)."""
+    # 1. Cloudflare header (highest priority for Render/Cloudflare)
+    cf_ip = request.headers.get("cf-connecting-ip")
+    if cf_ip and cf_ip.strip():
+        return cf_ip.strip()
+
+    # 2. True-Client-IP (Cloudflare Enterprise / Akamai)
+    true_ip = request.headers.get("true-client-ip")
+    if true_ip and true_ip.strip():
+        return true_ip.strip()
+
+    # 3. Standard X-Forwarded-For: client_ip, proxy1, proxy2
     xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    if xff and xff.strip():
+        client = xff.split(",")[0].strip()
+        if client:
+            return client
+
+    # 4. X-Real-IP
     x_real_ip = request.headers.get("x-real-ip")
-    if x_real_ip:
+    if x_real_ip and x_real_ip.strip():
         return x_real_ip.strip()
-    if request.client:
+
+    # 5. Direct client socket host
+    if request.client and request.client.host:
         return request.client.host
+
     return "unknown"
+
+
+# Endpoints and patterns strictly exempt from IP rate limiting
+RATE_LIMIT_EXEMPT_PATHS = {
+    "/",
+    "/docs",
+    "/openapi.json",
+    "/redoc",
+    "/favicon.ico",
+    "/api/health",
+    "/api/health/ai",
+    "/auth/youtube/status",
+    "/version.json",
+}
+
+RATE_LIMIT_EXEMPT_PREFIXES = (
+    "/assets/",
+    "/api/ai/status/",
+    "/api/video/highlights/status/",
+    "/api/video/moderation-check/status/",
+    "/api/jobs/",
+)
+
+RATE_LIMIT_EXEMPT_EXTENSIONS = (
+    ".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".json", ".map", ".mp4", ".webp"
+)
+
+
+def is_rate_limit_exempt(path: str) -> bool:
+    """Determine whether a request path is exempt from consuming client rate-limit quota."""
+    if path in RATE_LIMIT_EXEMPT_PATHS:
+        return True
+    if path.startswith(RATE_LIMIT_EXEMPT_PREFIXES):
+        return True
+    if path.endswith(RATE_LIMIT_EXEMPT_EXTENSIONS):
+        return True
+    # Background status polling or health checks are automated and must not starve user actions
+    if "/status" in path or "/health" in path:
+        return True
+    # Static SPA frontend routes (not API endpoints or action endpoints)
+    if not path.startswith("/api") and path not in (
+        "/automate", "/metadata", "/formats", "/download", "/download-thumbnail", "/auth"
+    ):
+        return True
+    return False
 
 
 # Middleware 2: IP-based sliding-window Rate Limiting
@@ -142,12 +205,8 @@ def get_client_ip(request: Request) -> str:
 async def rate_limit_middleware(request: Request, call_next):
     path = request.url.path
 
-    # Exempt static assets and frontend SPA routes from consuming API rate limit quota
-    if (
-        path.startswith("/assets/")
-        or path.endswith((".js", ".css", ".png", ".jpg", ".jpeg", ".svg", ".ico", ".woff", ".woff2", ".json", ".map"))
-        or (not path.startswith("/api") and path not in ("/automate", "/metadata", "/formats", "/download", "/download-thumbnail", "/auth"))
-    ):
+    # Exempt health checks, status polling, and static assets from rate limiting
+    if is_rate_limit_exempt(path):
         return await call_next(request)
 
     client_ip = get_client_ip(request)
@@ -158,18 +217,26 @@ async def rate_limit_middleware(request: Request, call_next):
 
     if len(history) >= RATE_LIMIT_BURST:
         req_id = request_id_ctx_var.get()
-        logger.warning(f"Rate limit exceeded for IP {client_ip} on {request.url.path}")
+        retry_after = max(1, int(RATE_LIMIT_SECONDS - (now - history[0]))) if history else int(RATE_LIMIT_SECONDS)
+        logger.warning(
+            f"Rate limit exceeded for IP {client_ip} on {request.url.path} "
+            f"({len(history)}/{RATE_LIMIT_BURST} in {RATE_LIMIT_SECONDS}s, retry_after={retry_after}s)"
+        )
         return JSONResponse(
             status_code=429,
             content={
-                "detail": "Too many requests. Please slow down.",
+                "detail": f"Too many requests. Please slow down and try again in {retry_after} seconds.",
                 "error": {
                     "code": 429,
-                    "message": "Too many requests. Please slow down.",
-                    "request_id": req_id
+                    "message": f"Too many requests. Please slow down and try again in {retry_after} seconds.",
+                    "request_id": req_id,
+                    "retry_after": retry_after
                 }
             },
-            headers={"X-Request-ID": req_id or ""}
+            headers={
+                "X-Request-ID": req_id or "",
+                "Retry-After": str(retry_after)
+            }
         )
 
     history.append(now)
@@ -182,6 +249,7 @@ async def rate_limit_middleware(request: Request, call_next):
             RATE_LIMIT_STORE.pop(ip, None)
 
     return await call_next(request)
+
 
 
 # Global Exception Handler: HTTPException

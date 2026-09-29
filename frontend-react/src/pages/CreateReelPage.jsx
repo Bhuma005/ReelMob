@@ -514,6 +514,8 @@ export default function CreateReelPage() {
       return;
     }
     
+    // Stop all active background polling timers so they don't consume rate limit or bandwidth
+    stopPolling();
     setIsAutomating(true);
     try {
       const payload = {

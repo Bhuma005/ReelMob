@@ -178,26 +178,49 @@ class TestMockedFormatsEndpoint:
 
 
 class TestRateLimiter:
-    """Verify rate limiter blocks burst calls exceeding RATE_LIMIT_BURST."""
+    """Verify rate limiter blocks burst calls exceeding RATE_LIMIT_BURST and exempts health/polling."""
 
-    def test_burst_rate_limit(self, client):
+    def test_burst_rate_limit(self, client, monkeypatch):
         RATE_LIMIT_STORE.clear()
-        # Burst requests rapidly exceeding RATE_LIMIT_BURST
-        responses = [client.get("/api/health") for _ in range(RATE_LIMIT_BURST + 2)]
+        monkeypatch.setattr("backend.main.RATE_LIMIT_BURST", 5)
+        # Burst requests rapidly exceeding RATE_LIMIT_BURST on non-exempt endpoint
+        # Sending empty POST to /metadata triggers fast 422 validation while consuming rate limit quota
+        responses = [
+            client.post("/metadata", json={})
+            for _ in range(7)
+        ]
         status_codes = [r.status_code for r in responses]
         # At least one 429 should occur
         assert 429 in status_codes
-        # Verify 429 body contract
+        # Verify 429 body contract & RFC 6585 Retry-After header
         idx_429 = status_codes.index(429)
         res_429 = responses[idx_429].json()
         assert "Too many requests" in res_429["detail"]
+        assert "Retry-After" in responses[idx_429].headers
 
-    def test_static_assets_exempt_from_rate_limit(self, client):
+    def test_health_and_polling_exempt_from_rate_limit(self, client, monkeypatch):
         RATE_LIMIT_STORE.clear()
+        monkeypatch.setattr("backend.main.RATE_LIMIT_BURST", 5)
+        # Health checks, status polling, and auth checks must be exempt from rate limiting
+        for _ in range(10):
+            res_h = client.get("/api/health")
+            assert res_h.status_code != 429
+            res_ai_h = client.get("/api/health/ai")
+            assert res_ai_h.status_code != 429
+            res_poll = client.get("/api/ai/status/test-non-existent-poll-job")
+            assert res_poll.status_code != 429
+            res_auth = client.get("/auth/youtube/status")
+            assert res_auth.status_code != 429
+
+    def test_static_assets_exempt_from_rate_limit(self, client, monkeypatch):
+        RATE_LIMIT_STORE.clear()
+        monkeypatch.setattr("backend.main.RATE_LIMIT_BURST", 5)
         # Non-API static assets should not increment RATE_LIMIT_STORE
-        responses = [client.get("/assets/vendor-react-Ce66LIeu.js") for _ in range(RATE_LIMIT_BURST + 5)]
+        responses = [client.get("/assets/vendor-react-Ce66LIeu.js") for _ in range(10)]
         # None should be 429
         assert all(r.status_code != 429 for r in responses)
+
+
 
 
 class TestAIAnalysisFallback:

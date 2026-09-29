@@ -28,8 +28,10 @@ DOWNLOAD_DIR = os.path.join(ROOT_DIR, "downloads")
 os.makedirs(DOWNLOAD_DIR, exist_ok=True)
 
 # Rate Limiting
-RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "30"))
-RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "1.0"))
+# RATE_LIMIT_BURST: Maximum burst requests permitted within RATE_LIMIT_SECONDS per IP.
+# Set to 120 / 60s for modern SPA rich interactions, parallel queries, and burst resilience.
+RATE_LIMIT_BURST = int(os.getenv("RATE_LIMIT_BURST", "120"))
+RATE_LIMIT_SECONDS = float(os.getenv("RATE_LIMIT_SECONDS", "60.0"))
 
 # Request Timeouts
 HTTP_TIMEOUT_SECONDS = float(os.getenv("HTTP_TIMEOUT_SECONDS", "30.0"))
