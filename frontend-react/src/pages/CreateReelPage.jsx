@@ -162,6 +162,11 @@ export default function CreateReelPage() {
 
         try {
           const statusRes = await videosApi.getHighlightStatus(jobId);
+          if (statusRes.status === 'queued_behind_another_job' || statusRes.queue_status === 'queued_behind_another_job') {
+            setHighlightStep("Queued behind another video job (processing one at a time to prevent server memory limit)...");
+          } else if (statusRes.status === 'PROCESSING') {
+            setHighlightStep("Analyzing keyframes and narrative pace...");
+          }
           if (statusRes.status === 'COMPLETED') {
             if (highlightPollRef.current) clearInterval(highlightPollRef.current);
             if (highlightTimerRef.current) clearInterval(highlightTimerRef.current);
@@ -217,6 +222,7 @@ export default function CreateReelPage() {
   const [isDismissedModeration, setIsDismissedModeration] = useState(false);
   const [isModerating, setIsModerating] = useState(false);
   const [moderationElapsed, setModerationElapsed] = useState(0);
+  const [moderationStep, setModerationStep] = useState('');
 
   const checkModeration = async (videoPathOverride) => {
     const pathToUse = videoPathOverride || store.metadata?.video_path || (store.formats?.[0] ? 'source_video.mp4' : '');
@@ -246,10 +252,16 @@ export default function CreateReelPage() {
         }
         try {
           const statusRes = await videosApi.getModerationStatus(jobId);
+          if (statusRes?.status === 'queued_behind_another_job' || statusRes?.queue_status === 'queued_behind_another_job') {
+            setModerationStep("Queued behind another video job (processing one at a time to prevent server memory limit)...");
+          } else if (statusRes?.status === 'PROCESSING') {
+            setModerationStep("Checking video for watermarks and platform branding...");
+          }
           if (statusRes?.status === 'COMPLETED') {
             if (moderationPollRef.current) clearInterval(moderationPollRef.current);
             if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
             setIsModerating(false);
+            setModerationStep('');
             if (statusRes.result?.watermark_detected) {
               setModerationResult(statusRes.result);
               setIsDismissedModeration(false);
@@ -260,6 +272,7 @@ export default function CreateReelPage() {
             if (moderationPollRef.current) clearInterval(moderationPollRef.current);
             if (moderationTimerRef.current) clearInterval(moderationTimerRef.current);
             setIsModerating(false);
+            setModerationStep('');
           }
         } catch (pollErr) {
           console.debug("Moderation poll error:", pollErr);
@@ -694,7 +707,7 @@ export default function CreateReelPage() {
           {isModerating && (
             <div className="flex items-center gap-2.5 text-xs text-text-muted bg-surface-elevated/40 border border-border/50 rounded-xl p-3 shadow-sm">
               <Loader2 className="w-4 h-4 animate-spin text-accent shrink-0" />
-              <span>Checking video for watermarks and platform branding... ({moderationElapsed}s)</span>
+              <span>{moderationStep || "Checking video for watermarks and platform branding..."} ({moderationElapsed}s)</span>
             </div>
           )}
 

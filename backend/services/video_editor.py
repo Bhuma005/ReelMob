@@ -170,8 +170,9 @@ def process_video_edit(
         cmd.extend(["-map", "0:v", "-map", "0:a?"])
 
     # Output encoding parameters
+    from backend.services.resource_limits import get_ffmpeg_threads
     cmd.extend([
-        "-threads", "2",
+        "-threads", get_ffmpeg_threads(),
         "-c:v", "libx264",
         "-preset", "fast",
         "-crf", "22",
@@ -184,6 +185,8 @@ def process_video_edit(
 
     logger.info(f"Executing video edit: {' '.join(cmd[:8])} ...")
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+    from backend.services.resource_limits import log_subprocess_peak_memory
+    log_subprocess_peak_memory("video_editor ffmpeg")
     if proc.returncode != 0:
         err_msg = proc.stderr[-800:] if proc.stderr else "Unknown error"
         logger.error(f"FFmpeg edit execution failed: {err_msg}")

@@ -109,9 +109,11 @@ def compute_video_perceptual_hash(video_path: str, url: Optional[str] = None) ->
         temp_img = tempfile.mktemp(suffix=".jpg")
         try:
             sample_time = max(0.1, duration * 0.5) if duration > 0 else 0.5
+            from backend.services.resource_limits import get_ffmpeg_threads, log_subprocess_peak_memory
             cmd = [
                 ffmpeg_path,
                 "-y",
+                "-threads", get_ffmpeg_threads(),
                 "-ss", str(sample_time),
                 "-i", resolved_path,
                 "-vframes", "1",
@@ -119,6 +121,7 @@ def compute_video_perceptual_hash(video_path: str, url: Optional[str] = None) ->
                 temp_img
             ]
             subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+            log_subprocess_peak_memory("duplicate_frame ffmpeg")
             if os.path.exists(temp_img) and os.path.getsize(temp_img) > 0:
                 with Image.open(temp_img) as img:
                     return compute_image_dhash(img)

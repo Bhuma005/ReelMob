@@ -118,6 +118,8 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
     Uses a heavy blurred background fill if the aspect ratios don't match exactly.
     Always produces a web-optimized MP4 with H.264, yuv420p, and +faststart.
     """
+    from backend.services.resource_limits import get_ffmpeg_threads
+
     ffmpeg_path, ffprobe_path = get_ff_paths()
     
     in_w, in_h = get_video_dimensions(input_path, ffprobe_path)
@@ -148,7 +150,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
             print(f"-> Near-exact match but non-standard stream ({codec}/{pix_fmt}). Re-encoding to H.264/yuv420p with +faststart.")
             cmd = [
                 ffmpeg_path, "-y",
-                "-threads", "2",
+                "-threads", get_ffmpeg_threads(),
                 "-i", input_path,
                 "-c:v", "libx264", "-preset", "fast", "-crf", "23",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
@@ -171,7 +173,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
         
         cmd = [
             ffmpeg_path, "-y",
-            "-threads", "2",
+            "-threads", get_ffmpeg_threads(),
             "-i", input_path,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
@@ -185,6 +187,9 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
     env = os.environ.copy()
     proc = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, env=env)
     
+    from backend.services.resource_limits import log_subprocess_peak_memory
+    log_subprocess_peak_memory("fit_to_canvas ffmpeg")
+
     if proc.returncode != 0:
         err = proc.stderr.decode(errors="ignore")
         raise RuntimeError(f"FFmpeg failed with code {proc.returncode}\\n{err[-500:]}")

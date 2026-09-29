@@ -129,8 +129,10 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
     # Apply Auto-Detect & Fit-to-Canvas (Master Requirement)
     fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
     try:
+        from backend.services.resource_limits import heavy_job_gate
         logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
-        await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
+        async with heavy_job_gate("automate_fit_to_canvas"):
+            await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
         if os.path.exists(fitted_filepath) and os.path.getsize(fitted_filepath) > 0:
             if os.path.exists(temp_filepath): 
                 os.remove(temp_filepath)

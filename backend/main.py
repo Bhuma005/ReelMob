@@ -660,13 +660,19 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
         job["started_at"] = datetime.now().isoformat()
 
         from backend.services.analysis_service import run_video_analysis
-        result_payload = await run_video_analysis(
-            video_url=url,
-            raw_title=title,
-            raw_description=description,
-            video_path=video_path,
-            progress_callback=_update_progress
-        )
+        from backend.services.resource_limits import heavy_job_gate
+
+        def _on_ai_waiting():
+            _update_progress(5, "Queued behind another video job...")
+
+        async with heavy_job_gate("ai_analysis", on_waiting=_on_ai_waiting):
+            result_payload = await run_video_analysis(
+                video_url=url,
+                raw_title=title,
+                raw_description=description,
+                video_path=video_path,
+                progress_callback=_update_progress
+            )
 
         if job.get("status") == "CANCELLED":
             return
@@ -1321,12 +1327,13 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
 
         # 2. Run FFmpeg (blur background padding technique)
         from backend.fit_to_canvas import get_ff_paths
+        from backend.services.resource_limits import get_ffmpeg_threads
         ffmpeg_bin, _ = get_ff_paths()
         filter_complex = f"[0:v]scale={W}:{H}:force_original_aspect_ratio=decrease[fg];[0:v]scale={W}:{H}:force_original_aspect_ratio=increase,boxblur=20:20,crop={W}:{H}[bg];[bg][fg]overlay=(W-w)/2:(H-h)/2,setsar=1,setdar={W}/{H}"
         cmd = [
             ffmpeg_bin,
             "-y",
-            "-threads", "2",
+            "-threads", get_ffmpeg_threads(),
             "-i", temp_in,
             "-lavfi", filter_complex,
             "-c:v", "libx264", "-preset", "fast", "-crf", "23",
@@ -1336,9 +1343,14 @@ async def convert_dashboard_video(video_id: str, req: ConvertRequest):
         ]
 
         def run_ffmpeg():
-            return subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            from backend.services.resource_limits import log_subprocess_peak_memory
+            log_subprocess_peak_memory("convert_dashboard_video ffmpeg")
+            return res
 
-        process = await asyncio.to_thread(run_ffmpeg)
+        from backend.services.resource_limits import heavy_job_gate
+        async with heavy_job_gate("convert_dashboard_video"):
+            process = await asyncio.to_thread(run_ffmpeg)
 
         if process.returncode != 0:
             err_msg = process.stderr.decode()
@@ -1407,16 +1419,18 @@ async def edit_video_endpoint(req: EditVideoRequest):
     watermark_dict = req.watermark.model_dump() if req.watermark else None
 
     try:
-        result = await asyncio.to_thread(
-            process_video_edit,
-            input_path=input_file,
-            output_path=output_path,
-            trim=trim_dict,
-            color=color_dict,
-            captions=captions_dict,
-            watermark=watermark_dict,
-            framing=req.framing,
-        )
+        from backend.services.resource_limits import heavy_job_gate
+        async with heavy_job_gate("edit_video"):
+            result = await asyncio.to_thread(
+                process_video_edit,
+                input_path=input_file,
+                output_path=output_path,
+                trim=trim_dict,
+                color=color_dict,
+                captions=captions_dict,
+                watermark=watermark_dict,
+                framing=req.framing,
+            )
 
         return {
             "status": "success",
@@ -1497,19 +1511,28 @@ async def _run_highlight_job_in_thread(
     num_clips: int,
     url: Optional[str]
 ):
+    def _notify_waiting():
+        job = HIGHLIGHT_JOBS.get(job_id)
+        if job and job.get("status") == "PENDING":
+            job["status"] = "queued_behind_another_job"
+            job["queue_status"] = "queued_behind_another_job"
+            job["message"] = "Queued behind another video job (processing serialized to prevent memory overflow)"
+
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_highlight_job,
-                job_id,
-                video_path,
-                target_duration_min,
-                target_duration_max,
-                num_clips,
-                url
-            ),
-            timeout=120.0
-        )
+        from backend.services.resource_limits import heavy_job_gate
+        async with heavy_job_gate("highlight_detection", on_waiting=_notify_waiting):
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    execute_highlight_job,
+                    job_id,
+                    video_path,
+                    target_duration_min,
+                    target_duration_max,
+                    num_clips,
+                    url
+                ),
+                timeout=120.0
+            )
     except asyncio.TimeoutError:
         job = HIGHLIGHT_JOBS.get(job_id)
         if job:
@@ -1548,6 +1571,8 @@ async def get_highlight_job_status(job_id: str):
     return {
         "job_id": job["job_id"],
         "status": job["status"],
+        "queue_status": job.get("queue_status"),
+        "message": job.get("message"),
         "highlights": job.get("highlights"),
         "error": job.get("error")
     }
@@ -1581,12 +1606,14 @@ async def check_duplicate_video_endpoint(req: DuplicateCheckRequest):
         )
 
     try:
-        result = await asyncio.to_thread(
-            check_video_duplicate,
-            video_path=input_file or clean_path or "",
-            threshold=req.threshold,
-            url=req.url
-        )
+        from backend.services.resource_limits import heavy_job_gate
+        async with heavy_job_gate("duplicate_check"):
+            result = await asyncio.to_thread(
+                check_video_duplicate,
+                video_path=input_file or clean_path or "",
+                threshold=req.threshold,
+                url=req.url
+            )
         return result
     except FileNotFoundError as fnf:
         raise HTTPException(status_code=404, detail=str(fnf))
@@ -1644,16 +1671,25 @@ async def _run_moderation_job_in_thread(
     video_path: Optional[str],
     url: Optional[str]
 ):
+    def _notify_waiting():
+        job = MODERATION_JOBS.get(job_id)
+        if job and job.get("status") == "PENDING":
+            job["status"] = "queued_behind_another_job"
+            job["queue_status"] = "queued_behind_another_job"
+            job["message"] = "Queued behind another video job (processing serialized to prevent memory overflow)"
+
     try:
-        await asyncio.wait_for(
-            asyncio.to_thread(
-                execute_moderation_job,
-                job_id,
-                video_path,
-                url
-            ),
-            timeout=90.0
-        )
+        from backend.services.resource_limits import heavy_job_gate
+        async with heavy_job_gate("content_moderation", on_waiting=_notify_waiting):
+            await asyncio.wait_for(
+                asyncio.to_thread(
+                    execute_moderation_job,
+                    job_id,
+                    video_path,
+                    url
+                ),
+                timeout=90.0
+            )
     except asyncio.TimeoutError:
         job = MODERATION_JOBS.get(job_id)
         if job:
@@ -1694,6 +1730,8 @@ async def get_moderation_job_status(job_id: str):
     return {
         "job_id": job["job_id"],
         "status": job["status"],
+        "queue_status": job.get("queue_status"),
+        "message": job.get("message"),
         "result": job.get("result"),
         "error": job.get("error")
     }

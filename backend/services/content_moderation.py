@@ -23,9 +23,11 @@ logger = logging.getLogger("reelsmob.moderation")
 
 def _extract_frame_at_time(video_path: str, timestamp: float, output_path: str, ffmpeg_path: str = "ffmpeg") -> bool:
     """Extracts a single frame at the specified timestamp using FFmpeg or OpenCV."""
+    from backend.services.resource_limits import get_ffmpeg_threads, log_subprocess_peak_memory
     cmd = [
         ffmpeg_path,
         "-y",
+        "-threads", get_ffmpeg_threads(),
         "-ss", str(max(0.0, timestamp)),
         "-i", video_path,
         "-vframes", "1",
@@ -34,6 +36,7 @@ def _extract_frame_at_time(video_path: str, timestamp: float, output_path: str, 
     ]
     try:
         proc = subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=True)
+        log_subprocess_peak_memory("moderation_frame ffmpeg")
         if os.path.exists(output_path) and os.path.getsize(output_path) > 0:
             return True
     except Exception:

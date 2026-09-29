@@ -182,7 +182,9 @@ class HighlightRequest(BaseModel):
 
 class HighlightResponse(BaseModel):
     job_id: str
-    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
+    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED", "queued_behind_another_job"]
+    queue_status: Optional[str] = None
+    message: Optional[str] = None
     highlights: Optional[List[HighlightItem]] = None
     error: Optional[str] = None
 
@@ -331,6 +333,8 @@ class ModerationResult(BaseModel):
 
 class ModerationJobResponse(BaseModel):
     job_id: str
-    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED"]
+    status: Literal["PENDING", "PROCESSING", "COMPLETED", "FAILED", "queued_behind_another_job"]
+    queue_status: Optional[str] = None
+    message: Optional[str] = None
     result: Optional[ModerationResult] = None
     error: Optional[str] = None
