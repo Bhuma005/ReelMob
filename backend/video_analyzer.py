@@ -92,9 +92,10 @@ def extract_video_frames(
         try:
             import subprocess, tempfile
             with tempfile.TemporaryDirectory() as tmpdir:
+                from backend.services.resource_limits import get_ffmpeg_threads, log_subprocess_peak_memory
                 cmd = [
                     ffmpeg_exe, '-y',
-                    '-threads', '1',
+                    '-threads', get_ffmpeg_threads(),
                     '-i', video_path,
                     '-vf', f'fps=1,scale={max_dim}:-2',
                     '-vframes', str(num_frames),
@@ -103,6 +104,7 @@ def extract_video_frames(
                     os.path.join(tmpdir, 'frame_%02d.jpg')
                 ]
                 subprocess.run(cmd, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False, timeout=30)
+                log_subprocess_peak_memory("video_analyzer ffmpeg")
                 extracted_files = sorted(f for f in os.listdir(tmpdir) if f.endswith('.jpg'))
                 for i, f in enumerate(extracted_files):
                     with open(os.path.join(tmpdir, f), 'rb') as img_f:
