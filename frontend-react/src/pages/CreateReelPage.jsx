@@ -327,7 +327,9 @@ export default function CreateReelPage() {
           fallback_reason: initRes.result.fallback_reason || initRes.fallback_reason || null
         };
         store.setAiAnalysisResult(resData);
+        const existingTags = useVideoStore.getState().allHashtags || [];
         const allTags = Array.from(new Set([
+          ...existingTags,
           ...(resData.youtube || []),
           ...(resData.instagram || []),
           ...(resData.hashtags || [])
@@ -373,7 +375,9 @@ export default function CreateReelPage() {
               fallback_reason: statusRes.result.fallback_reason || statusRes.fallback_reason || null
             };
             store.setAiAnalysisResult(resData);
+            const existingTags = useVideoStore.getState().allHashtags || [];
             const allTags = Array.from(new Set([
+              ...existingTags,
               ...(resData.youtube || []),
               ...(resData.instagram || []),
               ...(resData.hashtags || [])
@@ -476,7 +480,10 @@ export default function CreateReelPage() {
         if (!meta) return;
         store.setMetadata(meta);
         const tags = meta.hashtags || [];
-        if (tags.length > 0) store.setAllHashtags(tags);
+        if (tags.length > 0) {
+          const currentTags = useVideoStore.getState().allHashtags || [];
+          store.setAllHashtags(Array.from(new Set([...currentTags, ...tags])));
+        }
 
         if (meta.title || meta.description || targetUrl) {
           startAiAnalysis(meta.title, meta.description, targetUrl, meta.thumbnail_url);
@@ -486,7 +493,8 @@ export default function CreateReelPage() {
 
       commentsPromise.then(comm => {
         if (comm?.available && comm.hashtags?.length > 0) {
-          store.setAllHashtags([...new Set([...useVideoStore.getState().allHashtags, ...comm.hashtags])]);
+          const currentTags = useVideoStore.getState().allHashtags || [];
+          store.setAllHashtags(Array.from(new Set([...currentTags, ...comm.hashtags])));
         }
       });
 
@@ -980,7 +988,12 @@ export default function CreateReelPage() {
                                 className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${activeTagTab === 'all' ? 'bg-accent/20 text-accent font-bold' : 'text-text-muted hover:text-text'}`}
                                 onClick={() => setActiveTagTab('all')}
                               >
-                                All ({Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])])).length})
+                                All ({Array.from(new Set([
+                                  ...(store.allHashtags || []),
+                                  ...(store.aiAnalysisResult.hashtags || []),
+                                  ...(store.aiAnalysisResult.youtube || []),
+                                  ...(store.aiAnalysisResult.instagram || [])
+                                ])).length})
                               </button>
                               <button
                                 type="button"
@@ -1003,11 +1016,17 @@ export default function CreateReelPage() {
                               type="button"
                               className="text-[10px] text-text-muted hover:text-accent flex items-center gap-1 cursor-pointer font-mono"
                               onClick={() => {
+                                const allList = Array.from(new Set([
+                                  ...(store.allHashtags || []),
+                                  ...(store.aiAnalysisResult.hashtags || []),
+                                  ...(store.aiAnalysisResult.youtube || []),
+                                  ...(store.aiAnalysisResult.instagram || [])
+                                ]));
                                 const activeList = activeTagTab === 'youtube' 
                                   ? (store.aiAnalysisResult.youtube || [])
                                   : activeTagTab === 'instagram'
                                     ? (store.aiAnalysisResult.instagram || [])
-                                    : Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])]));
+                                    : allList;
                                 const tags = activeList.join(' ');
                                 navigator.clipboard.writeText(tags);
                                 toast.success(`Copied ${activeList.length} ${activeTagTab === 'all' ? 'viral' : activeTagTab} hashtags!`);
@@ -1019,7 +1038,12 @@ export default function CreateReelPage() {
                               type="button"
                               className="text-[10px] text-accent hover:text-accent/80 flex items-center gap-1 cursor-pointer font-mono font-semibold"
                               onClick={() => {
-                                const allTags = Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])])).join(' ');
+                                const allTags = Array.from(new Set([
+                                  ...(store.allHashtags || []),
+                                  ...(store.aiAnalysisResult.hashtags || []),
+                                  ...(store.aiAnalysisResult.youtube || []),
+                                  ...(store.aiAnalysisResult.instagram || [])
+                                ])).join(' ');
                                 const fullPost = `${store.aiAnalysisResult.viral_title || ''}\n\n${store.aiAnalysisResult.optimized_description || ''}\n\n${allTags}`.trim();
                                 navigator.clipboard.writeText(fullPost);
                                 toast.success("Copied Full Post (Title + Description + Hashtags)!");
@@ -1035,7 +1059,12 @@ export default function CreateReelPage() {
                             ? (store.aiAnalysisResult.youtube || [])
                             : activeTagTab === 'instagram'
                               ? (store.aiAnalysisResult.instagram || [])
-                              : Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])]))
+                              : Array.from(new Set([
+                                  ...(store.allHashtags || []),
+                                  ...(store.aiAnalysisResult.hashtags || []),
+                                  ...(store.aiAnalysisResult.youtube || []),
+                                  ...(store.aiAnalysisResult.instagram || [])
+                                ]))
                           ).map((tag, idx) => (
                             <span 
                               key={idx} 
@@ -1049,12 +1078,14 @@ export default function CreateReelPage() {
                                 onClick={() => {
                                   const updatedYt = (store.aiAnalysisResult.youtube || []).filter(t => t !== tag);
                                   const updatedIg = (store.aiAnalysisResult.instagram || []).filter(t => t !== tag);
+                                  const updatedTags = (store.aiAnalysisResult.hashtags || []).filter(t => t !== tag);
                                   store.setAiAnalysisResult({
                                     ...store.aiAnalysisResult,
                                     youtube: updatedYt,
-                                    instagram: updatedIg
+                                    instagram: updatedIg,
+                                    hashtags: updatedTags
                                   });
-                                  const updatedAll = Array.from(new Set([...updatedYt, ...updatedIg]));
+                                  const updatedAll = (store.allHashtags || []).filter(t => t !== tag);
                                   store.setAllHashtags(updatedAll);
                                 }}
                               >

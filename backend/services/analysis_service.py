@@ -191,7 +191,11 @@ async def run_video_analysis(
         logger.warning(f"Using deterministic fallback metadata. Reason: {fallback_reason}")
         fallback_title = raw_title or "Trending Reel"
         fallback_desc = raw_description or "Watch this trending video! #Shorts #Viral"
-        fallback_tags = ["#Shorts", "#Viral", "#Trending", "#Reel"]
+        fallback_tags = [
+            "#Shorts", "#ShortsFeed", "#Viral", "#Trending", "#Reel", "#ReelsInstagram",
+            "#ExplorePage", "#ViralVideo", "#MustWatch", "#ContentCreator", "#FYP", "#ForYou",
+            "#Trend", "#ViralReels", "#Popular", "#InstaGood", "#DailyReels"
+        ]
 
         sched_rec = calculate_deterministic_schedule()
         posting_slot = sched_rec.get("human_readable_time") or sched_rec.get("fallback_schedule", {}).get("human_readable_time", "06:00 PM")

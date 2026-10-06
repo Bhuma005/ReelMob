@@ -8,11 +8,12 @@ import os
 import uuid
 import asyncio
 import logging
+import tempfile
 from pathlib import Path
 from typing import Optional
 import yt_dlp
 
-from backend.config import DOWNLOAD_DIR
+from backend.config import DOWNLOAD_DIR, ROOT_DIR
 
 logger = logging.getLogger("reelsmob.download_service")
 
@@ -20,6 +21,62 @@ STANDARD_DOWNLOAD_UA = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/128.0.0.0 Safari/537.36"
 )
+
+_RUNTIME_COOKIE_FILE: Optional[str] = None
+
+
+def resolve_cookie_file() -> Optional[str]:
+    """
+    Resolves or materializes a valid cookies.txt file path for yt-dlp.
+    Supports:
+    1. Explicit file path from YTDL_COOKIES_PATH or COOKIES_FILE.
+    2. Local file on disk (ROOT_DIR/cookies.txt, ROOT_DIR/backend/cookies.txt).
+    3. Netscape cookie text provided via INSTAGRAM_COOKIES or YTDL_COOKIES environment variables.
+       Automatically writes to a persistent temp file and normalizes literal newlines.
+    """
+    global _RUNTIME_COOKIE_FILE
+
+    # 1. Custom path configured in env
+    env_path = os.getenv("YTDL_COOKIES_PATH") or os.getenv("COOKIES_FILE")
+    if env_path and os.path.isfile(env_path):
+        return str(Path(env_path).resolve())
+
+    # 2. Local files in project tree
+    candidates = [
+        ROOT_DIR / "cookies.txt",
+        ROOT_DIR / "backend" / "cookies.txt",
+        Path("cookies.txt"),
+        Path("backend/cookies.txt"),
+    ]
+    for c in candidates:
+        if c.is_file() and c.stat().st_size > 0:
+            return str(c.resolve())
+
+    # 3. In-memory environment variable (INSTAGRAM_COOKIES or YTDL_COOKIES)
+    raw_cookies = (os.getenv("INSTAGRAM_COOKIES") or os.getenv("YTDL_COOKIES") or "").strip()
+    if raw_cookies:
+        if _RUNTIME_COOKIE_FILE and os.path.isfile(_RUNTIME_COOKIE_FILE):
+            return _RUNTIME_COOKIE_FILE
+
+        # Handle literal escaped newlines if passed in single-line env input
+        content = raw_cookies
+        if "\\n" in content and "\n" not in content:
+            content = content.replace("\\n", "\n")
+
+        # Ensure standard Netscape header if missing
+        if not content.startswith("# Netscape HTTP Cookie File"):
+            content = "# Netscape HTTP Cookie File\n" + content
+
+        try:
+            tmp = Path(tempfile.gettempdir()) / "reelmob_cookies.txt"
+            tmp.write_text(content, encoding="utf-8")
+            _RUNTIME_COOKIE_FILE = str(tmp.resolve())
+            logger.info(f"🍪 Materialized runtime cookies file from environment at: {_RUNTIME_COOKIE_FILE}")
+            return _RUNTIME_COOKIE_FILE
+        except Exception as e:
+            logger.warning(f"Failed to write runtime cookies file: {e}")
+
+    return None
 
 
 def ensure_video_downloaded(
@@ -53,6 +110,8 @@ def ensure_video_downloaded(
     else:
         format_selector = format_id or 'bestvideo[ext=mp4]+bestaudio[ext=m4a]/best[ext=mp4]/best'
 
+    cookie_file = resolve_cookie_file()
+
     ydl_opts = {
         'format': format_selector,
         'outtmpl': temp_filepath,
@@ -66,6 +125,9 @@ def ensure_video_downloaded(
         },
         'nocheckcertificate': True,
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     if is_youtube:
         ydl_opts['extractor_args'] = {
             'youtube': {
@@ -85,8 +147,16 @@ def ensure_video_downloaded(
                 'quiet': True,
                 'no_warnings': True,
                 'socket_timeout': timeout_seconds,
+                'http_headers': {
+                    'User-Agent': STANDARD_DOWNLOAD_UA,
+                    'Accept': '*/*',
+                    'Accept-Language': 'en-US,en;q=0.9',
+                },
                 'nocheckcertificate': True,
             }
+            if cookie_file:
+                fallback_opts['cookiefile'] = cookie_file
+
             with yt_dlp.YoutubeDL(fallback_opts) as ydl:
                 ydl.download([url])
         except Exception as e2:
@@ -96,7 +166,12 @@ def ensure_video_downloaded(
                     os.remove(temp_filepath)
                 except Exception:
                     pass
-            raise RuntimeError(f"Download failed: {str(e2)}") from e2
+            err_str = str(e2)
+            if "empty media response" in err_str.lower() or "not granting access" in err_str.lower():
+                raise RuntimeError(
+                    "Instagram requires authentication to download this reel. Please set INSTAGRAM_COOKIES in Render."
+                ) from e2
+            raise RuntimeError(f"Download failed: {err_str}") from e2
 
     if not os.path.exists(temp_filepath) or os.path.getsize(temp_filepath) == 0:
         if os.path.exists(temp_filepath):

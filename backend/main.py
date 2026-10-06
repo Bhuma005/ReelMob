@@ -54,6 +54,7 @@ from backend.schemas import (
     validate_video_url,
     sanitize_filename_or_id,
 )
+from backend.services.video_download import resolve_cookie_file, STANDARD_DOWNLOAD_UA
 from backend.automate import router as automate_router
 from backend.youtube_auth import router as yt_auth_router
 from backend.security_headers import SecurityHeadersMiddleware
@@ -326,12 +327,20 @@ def validate_url(url: str):
 async def get_formats(req: URLRequest, request: Request):
     clean_url = validate_video_url(req.url)
 
+    cookie_file = resolve_cookie_file()
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': STANDARD_DOWNLOAD_UA,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
 
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
@@ -416,8 +425,14 @@ async def get_formats(req: URLRequest, request: Request):
         logger.error(f"Timeout extracting formats for {clean_url}")
         raise HTTPException(status_code=504, detail="Timeout while fetching video formats from upstream.")
     except yt_dlp.utils.DownloadError as e:
-        logger.error(f"yt-dlp error: {e}")
-        raise HTTPException(status_code=400, detail=f"Download error: {str(e)}")
+        err_msg = str(e)
+        logger.error(f"yt-dlp error: {err_msg}")
+        if "empty media response" in err_msg.lower() or "not granting access" in err_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Instagram requires authentication for this post. Please configure INSTAGRAM_COOKIES in Render."
+            )
+        raise HTTPException(status_code=400, detail=f"Download error: {err_msg}")
     except HTTPException:
         raise
     except Exception as e:
@@ -465,72 +480,104 @@ async def download_video(req: DownloadRequest, request: Request):
         raise HTTPException(status_code=400, detail="Invalid format_id provided.")
 
     temp_id = str(uuid.uuid4())
+    cookie_file = resolve_cookie_file()
+    is_youtube = "youtube.com" in clean_url.lower() or "youtu.be" in clean_url.lower()
+
     ydl_opts = {
         'format': clean_fmt,
         'outtmpl': os.path.join(DOWNLOAD_DIR, f"{temp_id}.%(ext)s"),
         'quiet': False,
         'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': STANDARD_DOWNLOAD_UA,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
+        'nocheckcertificate': True,
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+    if is_youtube:
+        ydl_opts['extractor_args'] = {
+            'youtube': {
+                'player_client': ['ios', 'android', 'web']
+            }
+        }
 
     try:
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            logger.info(f"Downloading format {clean_fmt} for {clean_url}")
-            info = await asyncio.wait_for(
-                asyncio.to_thread(ydl.extract_info, clean_url, download=True),
-                timeout=YTDL_TIMEOUT_SECONDS * 3
-            )
+        info = None
+        try:
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                logger.info(f"Downloading format {clean_fmt} for {clean_url}")
+                info = await asyncio.wait_for(
+                    asyncio.to_thread(ydl.extract_info, clean_url, download=True),
+                    timeout=YTDL_TIMEOUT_SECONDS * 3
+                )
+        except (yt_dlp.utils.DownloadError, Exception) as primary_err:
+            if clean_fmt != 'best':
+                logger.warning(f"Format {clean_fmt} failed for {clean_url}: {primary_err}. Retrying with 'best' format fallback...")
+                fallback_opts = dict(ydl_opts)
+                fallback_opts['format'] = 'best'
+                fallback_opts['quiet'] = True
+                with yt_dlp.YoutubeDL(fallback_opts) as ydl:
+                    info = await asyncio.wait_for(
+                        asyncio.to_thread(ydl.extract_info, clean_url, download=True),
+                        timeout=YTDL_TIMEOUT_SECONDS * 3
+                    )
+            else:
+                raise primary_err
 
-            ext = info.get('ext', 'mp4') if info else 'mp4'
-            filepath = os.path.join(DOWNLOAD_DIR, f"{temp_id}.{ext}")
+        ext = info.get('ext', 'mp4') if info else 'mp4'
+        filepath = os.path.join(DOWNLOAD_DIR, f"{temp_id}.{ext}")
 
-            if not os.path.exists(filepath):
-                downloaded_files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{temp_id}*"))
-                if downloaded_files:
-                    filepath = downloaded_files[0]
-                else:
-                    raise FileNotFoundError("Download failed, file not found.")
+        if not os.path.exists(filepath):
+            downloaded_files = glob.glob(os.path.join(DOWNLOAD_DIR, f"{temp_id}*"))
+            if downloaded_files:
+                filepath = downloaded_files[0]
+            else:
+                raise FileNotFoundError("Download failed, file not found.")
 
-            raw_id = info.get('id', temp_id) if info else temp_id
-            video_id = sanitize_filename_or_id(raw_id) or temp_id
-            final_filename = f"{video_id}.{filepath.split('.')[-1]}"
-            final_filepath = os.path.join(DOWNLOAD_DIR, final_filename)
+        raw_id = info.get('id', temp_id) if info else temp_id
+        video_id = sanitize_filename_or_id(raw_id) or temp_id
+        final_filename = f"{video_id}.{filepath.split('.')[-1]}"
+        final_filepath = os.path.join(DOWNLOAD_DIR, final_filename)
 
-            if os.path.exists(final_filepath):
-                try:
-                    os.remove(final_filepath)
-                except Exception:
-                    final_filepath = os.path.join(DOWNLOAD_DIR, f"{video_id}_{temp_id}.{filepath.split('.')[-1]}")
-
-            os.rename(filepath, final_filepath)
-
-            # Run FFprobe verification for audit logs
-            import subprocess
-            import json
+        if os.path.exists(final_filepath):
             try:
-                cmd = [
-                    "backend/ffprobe.exe" if os.path.exists("backend/ffprobe.exe") else "ffprobe",
-                    "-v", "error", "-select_streams", "v:0",
-                    "-show_entries", "stream=width,height,display_aspect_ratio",
-                    "-of", "json", final_filepath
-                ]
-                probe_res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                if probe_res.returncode == 0:
-                    probe_data = json.loads(probe_res.stdout)
-                    streams = probe_data.get('streams', [])
-                    if streams:
-                        v_stream = streams[0]
-                        out_w = v_stream.get('width', 0)
-                        out_h = v_stream.get('height', 0)
-                        dar = v_stream.get('display_aspect_ratio', 'Unknown')
-                        logger.info(f"DOWNLOAD VERIFIED | OUTPUT: {out_w}x{out_h} | DAR: {dar} | MODE: original | FILE: {final_filename}")
-            except Exception as e:
-                logger.error(f"FFprobe verification failed: {e}")
+                os.remove(final_filepath)
+            except Exception:
+                final_filepath = os.path.join(DOWNLOAD_DIR, f"{video_id}_{temp_id}.{filepath.split('.')[-1]}")
 
-            return FileResponse(
-                path=final_filepath,
-                media_type=f"video/{final_filepath.split('.')[-1]}",
-                filename=final_filename
-            )
+        os.rename(filepath, final_filepath)
+
+        # Run FFprobe verification for audit logs
+        import subprocess
+        import json
+        try:
+            cmd = [
+                "backend/ffprobe.exe" if os.path.exists("backend/ffprobe.exe") else "ffprobe",
+                "-v", "error", "-select_streams", "v:0",
+                "-show_entries", "stream=width,height,display_aspect_ratio",
+                "-of", "json", final_filepath
+            ]
+            probe_res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+            if probe_res.returncode == 0:
+                probe_data = json.loads(probe_res.stdout)
+                streams = probe_data.get('streams', [])
+                if streams:
+                    v_stream = streams[0]
+                    out_w = v_stream.get('width', 0)
+                    out_h = v_stream.get('height', 0)
+                    dar = v_stream.get('display_aspect_ratio', 'Unknown')
+                    logger.info(f"DOWNLOAD VERIFIED | OUTPUT: {out_w}x{out_h} | DAR: {dar} | MODE: original | FILE: {final_filename}")
+        except Exception as e:
+            logger.error(f"FFprobe verification failed: {e}")
+
+        return FileResponse(
+            path=final_filepath,
+            media_type=f"video/{final_filepath.split('.')[-1]}",
+            filename=final_filename
+        )
 
     except asyncio.TimeoutError:
         cleanup_partial_downloads(temp_id)
@@ -538,8 +585,14 @@ async def download_video(req: DownloadRequest, request: Request):
         raise HTTPException(status_code=504, detail="Timeout while downloading video from upstream.")
     except yt_dlp.utils.DownloadError as e:
         cleanup_partial_downloads(temp_id)
-        logger.error(f"yt-dlp error: {e}")
-        raise HTTPException(status_code=400, detail=f"Download error: {str(e)}")
+        err_msg = str(e)
+        logger.error(f"yt-dlp error: {err_msg}")
+        if "empty media response" in err_msg.lower() or "not granting access" in err_msg.lower() or "login required" in err_msg.lower():
+            raise HTTPException(
+                status_code=400,
+                detail="Instagram requires authentication to download this reel. Please set INSTAGRAM_COOKIES in Render."
+            )
+        raise HTTPException(status_code=400, detail=f"Download error: {err_msg}")
     except HTTPException:
         cleanup_partial_downloads(temp_id)
         raise
@@ -557,12 +610,21 @@ async def get_metadata(req: URLRequest, request: Request):
     except HTTPException:
         return {"title": None, "description": None, "description_clean": None, "hashtags": [], "thumbnail_url": None}
 
+    cookie_file = resolve_cookie_file()
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': STANDARD_DOWNLOAD_UA,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.wait_for(
@@ -612,13 +674,22 @@ async def get_metadata_comments(req: URLRequest, request: Request):
     except HTTPException:
         return {"hashtags": [], "available": False}
 
+    cookie_file = resolve_cookie_file()
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'getcomments': True,
         'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': STANDARD_DOWNLOAD_UA,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.wait_for(
@@ -653,12 +724,21 @@ async def get_metadata_comments(req: URLRequest, request: Request):
 async def download_thumbnail(req: URLRequest, request: Request):
     clean_url = validate_video_url(req.url)
 
+    cookie_file = resolve_cookie_file()
     ydl_opts = {
         'quiet': True,
         'no_warnings': True,
         'extract_flat': False,
         'socket_timeout': 30,
+        'http_headers': {
+            'User-Agent': STANDARD_DOWNLOAD_UA,
+            'Accept': '*/*',
+            'Accept-Language': 'en-US,en;q=0.9',
+        },
     }
+    if cookie_file:
+        ydl_opts['cookiefile'] = cookie_file
+
     try:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = await asyncio.wait_for(
