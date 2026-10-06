@@ -19,8 +19,8 @@ export async function fetchApi(endpoint, options = {}, retries = 2) {
     throw netErr;
   }
 
-  // Auto-retry transient server errors (429 rate limit or 502/504 bad gateway) with backoff
-  if ((response.status === 429 || response.status === 502 || response.status === 504) && retries > 0) {
+  // Auto-retry transient server errors (429 rate limit or 502/503/504 gateway & service unavailable) with backoff
+  if ((response.status === 429 || response.status === 502 || response.status === 503 || response.status === 504) && retries > 0) {
     let delay = 1500;
     if (response.status === 429) {
       const retryAfterHeader = response.headers.get('retry-after');
@@ -33,6 +33,10 @@ export async function fetchApi(endpoint, options = {}, retries = 2) {
         delay = retries === 2 ? 1500 : 3000;
       }
       console.warn(`[API] 429 received for ${endpoint}. Retrying in ${delay}ms (${retries} attempts left)...`);
+    } else if (response.status === 503) {
+      // 503 Service Unavailable is typical during Render container wake-up or deployment reload
+      delay = retries === 2 ? 2000 : 4000;
+      console.warn(`[API] 503 Service Unavailable received for ${endpoint}. Container waking up or reloading. Retrying in ${delay}ms...`);
     } else {
       delay = 2500;
     }
@@ -60,8 +64,8 @@ export async function fetchApi(endpoint, options = {}, retries = 2) {
     if (!errorMsg || !errorMsg.trim()) {
       if (response.status === 429) {
         errorMsg = 'Server is currently busy processing requests (429). Please wait a moment and try again.';
-      } else if (response.status === 502 || response.status === 504) {
-        errorMsg = `Server is temporarily unavailable (${response.status}). Please try again in a few moments.`;
+      } else if (response.status === 502 || response.status === 503 || response.status === 504) {
+        errorMsg = `Server is temporarily restarting or waking up (${response.status}). Please wait a few seconds and try again.`;
       } else {
         errorMsg = response.statusText || `Server returned error (${response.status})`;
       }
