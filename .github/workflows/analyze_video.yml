@@ -1,4 +1,4 @@
-name: Analyze Video Worker (2-CPU Offload)
+name: Analyze Video Worker (GHCR Container Offload)
 
 on:
   repository_dispatch:
@@ -9,27 +9,15 @@ jobs:
     name: Heavy Video Frame & AI Analysis
     runs-on: ubuntu-latest
     timeout-minutes: 10
+    container:
+      image: ghcr.io/bhuma005/reelmob-worker:latest
+      credentials:
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
 
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
-          cache: 'pip'
-          cache-dependency-path: 'backend/requirements.txt'
-
-      - name: Install System Dependencies (ffmpeg)
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y ffmpeg
-
-      - name: Install Python Dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r backend/requirements.txt
 
       - name: Run Video Analysis Worker
         env:
