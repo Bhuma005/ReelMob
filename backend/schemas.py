@@ -75,6 +75,7 @@ class AnalyzeRequest(BaseModel):
     description: Optional[str] = Field(default='', max_length=10000)
     url: Optional[str] = Field(default='', max_length=2000)
     video_path: Optional[str] = Field(default='', max_length=1000)
+    thumbnail_url: Optional[str] = Field(default='', max_length=2000)
 
     @field_validator('url')
     @classmethod
@@ -82,6 +83,7 @@ class AnalyzeRequest(BaseModel):
         if v and v.strip():
             return validate_video_url(v)
         return v or ''
+
 
     @field_validator('video_path')
     @classmethod

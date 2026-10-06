@@ -41,6 +41,8 @@ export default function CreateReelPage() {
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isAccepted, setIsAccepted] = useState(false);
   const [activeFormatId, setActiveFormatId] = useState(null);
+  const [activeTagTab, setActiveTagTab] = useState('all'); // 'all', 'youtube', 'instagram'
+
 
   // Video Editor modal state
   const [isEditorOpen, setIsEditorOpen] = useState(false);
@@ -303,7 +305,7 @@ export default function CreateReelPage() {
     }
   }, [store.url, setValue, watchedUrl]);
 
-  const startAiAnalysis = async (title, description, videoUrl) => {
+  const startAiAnalysis = async (title, description, videoUrl, thumbnailUrl = '') => {
     stopPolling();
     setElapsedSeconds(0);
     setIsAccepted(false);
@@ -313,7 +315,7 @@ export default function CreateReelPage() {
     store.setAiJobProgress(null, 15, 'Queued for background analysis...');
 
     try {
-      const initRes = await metadataApi.analyze(title, description, videoUrl);
+      const initRes = await metadataApi.analyze(title, description, videoUrl, thumbnailUrl);
       if (!initRes) {
         store.setAiAnalysisStatus('error', 'Failed to initialize AI analysis');
         return;
@@ -325,6 +327,14 @@ export default function CreateReelPage() {
           fallback_reason: initRes.result.fallback_reason || initRes.fallback_reason || null
         };
         store.setAiAnalysisResult(resData);
+        const allTags = Array.from(new Set([
+          ...(resData.youtube || []),
+          ...(resData.instagram || []),
+          ...(resData.hashtags || [])
+        ]));
+        if (allTags.length > 0) {
+          store.setAllHashtags(allTags);
+        }
         stopPolling();
         if (initRes.cached) {
           toast.success("⚡ Instant AI optimization loaded from cache!");
@@ -363,6 +373,14 @@ export default function CreateReelPage() {
               fallback_reason: statusRes.result.fallback_reason || statusRes.fallback_reason || null
             };
             store.setAiAnalysisResult(resData);
+            const allTags = Array.from(new Set([
+              ...(resData.youtube || []),
+              ...(resData.instagram || []),
+              ...(resData.hashtags || [])
+            ]));
+            if (allTags.length > 0) {
+              store.setAllHashtags(allTags);
+            }
             toast.success("✨ AI Content Optimization complete!");
           } else if (statusRes.status === 'FAILED') {
             stopPolling();
@@ -373,6 +391,7 @@ export default function CreateReelPage() {
           } else {
             store.setAiJobProgress(jobId, statusRes.progress || 20, statusRes.current_step || 'Working...');
           }
+
         } catch (pollErr) {
           console.warn("Polling error:", pollErr);
         }
@@ -399,7 +418,7 @@ export default function CreateReelPage() {
 
   const handleRetryAi = () => {
     if (store.metadata?.title || store.metadata?.description || store.url) {
-      startAiAnalysis(store.metadata?.title, store.metadata?.description, store.url);
+      startAiAnalysis(store.metadata?.title, store.metadata?.description, store.url, store.metadata?.thumbnail_url);
     } else {
       onFormSubmit({ url: store.url });
     }
@@ -460,9 +479,10 @@ export default function CreateReelPage() {
         if (tags.length > 0) store.setAllHashtags(tags);
 
         if (meta.title || meta.description || targetUrl) {
-          startAiAnalysis(meta.title, meta.description, targetUrl);
+          startAiAnalysis(meta.title, meta.description, targetUrl, meta.thumbnail_url);
         }
       });
+
 
       commentsPromise.then(comm => {
         if (comm?.available && comm.hashtags?.length > 0) {
@@ -521,7 +541,10 @@ export default function CreateReelPage() {
       const payload = {
         title: store.aiAnalysisResult?.viral_title || store.metadata?.title || 'Untitled',
         description: store.aiAnalysisResult?.optimized_description || store.metadata?.description || '',
-        hashtags: store.allHashtags || [],
+        hashtags: (store.allHashtags && store.allHashtags.length > 0)
+          ? store.allHashtags
+          : Array.from(new Set([...(store.aiAnalysisResult?.youtube || []), ...(store.aiAnalysisResult?.instagram || [])])),
+
         thumbnail_url: store.metadata?.thumbnail_url || '',
         url: store.url,
         format_id: activeFormatId || store.formats?.[0]?.format_id || null,
@@ -813,6 +836,20 @@ export default function CreateReelPage() {
                 >
                   Download Cover Image
                 </Button>
+                {store.aiAnalysisResult && (
+                  <Button 
+                    variant="ghost" 
+                    className="w-full text-xs text-accent hover:text-accent/80 hover:bg-accent/10 cursor-pointer font-mono flex items-center justify-center gap-1.5" 
+                    onClick={() => {
+                      const allTags = Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])])).join(' ');
+                      const fullPost = `${store.aiAnalysisResult.viral_title || ''}\n\n${store.aiAnalysisResult.optimized_description || ''}\n\n${allTags}`.trim();
+                      navigator.clipboard.writeText(fullPost);
+                      toast.success("Copied Title, Description & Hashtags to clipboard!");
+                    }}
+                  >
+                    <Copy className="w-3.5 h-3.5 mr-1" /> Copy Post Metadata & Tags
+                  </Button>
+                )}
               </div>
             </Card>
 
@@ -841,11 +878,9 @@ export default function CreateReelPage() {
                 <CardContent className="p-5 space-y-5">
                   {store.aiAnalysisResult ? (
                     <>
-                      {/* Diagnostics & Fallback Reason Banner */}
-                      {(store.aiAnalysisResult.fallback_reason || 
-                        store.aiAnalysisResult.raw_result?.fallback_reason || 
-                        store.aiAnalysisResult.confidence_notes === 'FALLBACK' || 
-                        store.aiAnalysisResult.ai_failed) && (
+                      {/* Diagnostics & Fallback Reason Banner (shown only on true failure or unassisted fallback) */}
+                      {(store.aiAnalysisResult.ai_failed || 
+                        store.aiAnalysisResult.confidence_notes === 'FALLBACK') && (
                         <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-3 text-xs flex items-start gap-2.5 text-amber-200">
                           <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5 text-amber-400" />
                           <div className="space-y-1">
@@ -865,6 +900,7 @@ export default function CreateReelPage() {
                           </div>
                         </div>
                       )}
+
 
                       {/* Source / Model indicator when real analysis succeeded */}
                       {!store.aiAnalysisResult.ai_failed && store.aiAnalysisResult.confidence_notes !== 'FALLBACK' && (
@@ -932,30 +968,75 @@ export default function CreateReelPage() {
 
                       {/* Hashtag Chips */}
                       <div className="space-y-2">
-                        <div className="flex items-center justify-between">
-                          <div className="flex items-center gap-2">
+                        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                          <div className="flex flex-wrap items-center gap-2">
                             <span className="text-[10px] uppercase text-text-muted font-mono font-bold tracking-wider">
                               VIRAL HASHTAGS
                             </span>
-                            <span className="text-[10px] bg-surface-elevated px-2 py-0.5 rounded-full border border-border font-mono text-text-muted">
-                              {(store.aiAnalysisResult.youtube || []).length} tags
-                            </span>
+                            {/* Platform filter pills */}
+                            <div className="inline-flex items-center bg-surface-elevated rounded-md p-0.5 border border-border text-[10px] font-mono">
+                              <button
+                                type="button"
+                                className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${activeTagTab === 'all' ? 'bg-accent/20 text-accent font-bold' : 'text-text-muted hover:text-text'}`}
+                                onClick={() => setActiveTagTab('all')}
+                              >
+                                All ({Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])])).length})
+                              </button>
+                              <button
+                                type="button"
+                                className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${activeTagTab === 'youtube' ? 'bg-accent/20 text-accent font-bold' : 'text-text-muted hover:text-text'}`}
+                                onClick={() => setActiveTagTab('youtube')}
+                              >
+                                YouTube ({(store.aiAnalysisResult.youtube || []).length})
+                              </button>
+                              <button
+                                type="button"
+                                className={`px-2 py-0.5 rounded transition-colors cursor-pointer ${activeTagTab === 'instagram' ? 'bg-accent/20 text-accent font-bold' : 'text-text-muted hover:text-text'}`}
+                                onClick={() => setActiveTagTab('instagram')}
+                              >
+                                Instagram ({(store.aiAnalysisResult.instagram || []).length})
+                              </button>
+                            </div>
                           </div>
-                          <button 
-                            type="button"
-                            className="text-[10px] text-text-muted hover:text-accent flex items-center gap-1 cursor-pointer font-mono"
-                            onClick={() => {
-                              const tags = (store.aiAnalysisResult.youtube || []).join(' ');
-                              navigator.clipboard.writeText(tags);
-                              toast.success(`Copied ${(store.aiAnalysisResult.youtube || []).length} hashtags!`);
-                            }}
-                          >
-                            <Copy className="w-3 h-3" /> Copy All
-                          </button>
+                          <div className="flex items-center gap-2">
+                            <button 
+                              type="button"
+                              className="text-[10px] text-text-muted hover:text-accent flex items-center gap-1 cursor-pointer font-mono"
+                              onClick={() => {
+                                const activeList = activeTagTab === 'youtube' 
+                                  ? (store.aiAnalysisResult.youtube || [])
+                                  : activeTagTab === 'instagram'
+                                    ? (store.aiAnalysisResult.instagram || [])
+                                    : Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])]));
+                                const tags = activeList.join(' ');
+                                navigator.clipboard.writeText(tags);
+                                toast.success(`Copied ${activeList.length} ${activeTagTab === 'all' ? 'viral' : activeTagTab} hashtags!`);
+                              }}
+                            >
+                              <Copy className="w-3 h-3" /> Copy Tags
+                            </button>
+                            <button 
+                              type="button"
+                              className="text-[10px] text-accent hover:text-accent/80 flex items-center gap-1 cursor-pointer font-mono font-semibold"
+                              onClick={() => {
+                                const allTags = Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])])).join(' ');
+                                const fullPost = `${store.aiAnalysisResult.viral_title || ''}\n\n${store.aiAnalysisResult.optimized_description || ''}\n\n${allTags}`.trim();
+                                navigator.clipboard.writeText(fullPost);
+                                toast.success("Copied Full Post (Title + Description + Hashtags)!");
+                              }}
+                            >
+                              <Sparkles className="w-3 h-3" /> Copy Full Post
+                            </button>
+                          </div>
                         </div>
 
                         <div className="flex flex-wrap gap-1.5 p-3 bg-surface-elevated/50 rounded-lg border border-border min-h-[48px]">
-                          {(store.aiAnalysisResult.youtube || []).map((tag, idx) => (
+                          {(activeTagTab === 'youtube' 
+                            ? (store.aiAnalysisResult.youtube || [])
+                            : activeTagTab === 'instagram'
+                              ? (store.aiAnalysisResult.instagram || [])
+                              : Array.from(new Set([...(store.aiAnalysisResult.youtube || []), ...(store.aiAnalysisResult.instagram || [])]))
+                          ).map((tag, idx) => (
                             <span 
                               key={idx} 
                               className="text-xs px-2.5 py-1 bg-surface-elevated text-accent border border-accent/20 rounded-full flex items-center gap-1"
@@ -966,12 +1047,15 @@ export default function CreateReelPage() {
                                 className="w-3.5 h-3.5 rounded-full hover:bg-danger/20 hover:text-danger text-text-muted inline-flex items-center justify-center text-[10px] transition-colors ml-0.5 cursor-pointer"
                                 title="Remove tag"
                                 onClick={() => {
-                                  const updated = (store.aiAnalysisResult.youtube || []).filter((_, i) => i !== idx);
+                                  const updatedYt = (store.aiAnalysisResult.youtube || []).filter(t => t !== tag);
+                                  const updatedIg = (store.aiAnalysisResult.instagram || []).filter(t => t !== tag);
                                   store.setAiAnalysisResult({
                                     ...store.aiAnalysisResult,
-                                    youtube: updated,
-                                    instagram: updated
+                                    youtube: updatedYt,
+                                    instagram: updatedIg
                                   });
+                                  const updatedAll = Array.from(new Set([...updatedYt, ...updatedIg]));
+                                  store.setAllHashtags(updatedAll);
                                 }}
                               >
                                 ×
@@ -980,6 +1064,7 @@ export default function CreateReelPage() {
                           ))}
                         </div>
                       </div>
+
 
                       {/* Recommended Publish Slot */}
                       <div className="p-3 bg-surface-elevated/40 border border-border rounded-lg space-y-1.5">

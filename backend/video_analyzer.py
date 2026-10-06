@@ -160,16 +160,50 @@ def extract_frames_from_url(
     url: str,
     num_frames: int = 5,
     max_dim: int = 480,
-    progress_callback = None
+    progress_callback = None,
+    thumbnail_url: Optional[str] = None
 ) -> List[str]:
     """
     Extracts preview/thumbnail frame(s) directly from a video URL without downloading the full video.
     This enables Gemini visual analysis even before the video is stored locally.
     """
-    if not url:
+    if not url and not thumbnail_url:
         return []
 
     frames_b64: List[str] = []
+
+    # 1. Fast path: If direct thumbnail_url is provided, download directly (bypasses yt-dlp latency)
+    if thumbnail_url:
+        try:
+            req = urllib.request.Request(
+                thumbnail_url,
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+            )
+            with urllib.request.urlopen(req, timeout=6) as resp:
+                img_bytes = resp.read()
+            if img_bytes and len(img_bytes) > 200:
+                try:
+                    import cv2
+                    import numpy as np
+                    nparr = np.frombuffer(img_bytes, np.uint8)
+                    img = cv2.imdecode(nparr, cv2.IMREAD_COLOR)
+                    if img is not None:
+                        h, w = img.shape[:2]
+                        if max(h, w) > max_dim:
+                            scale = max_dim / max(h, w)
+                            img = cv2.resize(img, (int(w * scale), int(h * scale)), interpolation=cv2.INTER_AREA)
+                        ret_enc, buf = cv2.imencode('.jpg', img, [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+                        if ret_enc:
+                            frames_b64.append(base64.b64encode(buf).decode('utf-8'))
+                            if progress_callback:
+                                progress_callback(40, 'Direct thumbnail frame extracted successfully...')
+                            logger.info(f'Extracted preview frame directly from thumbnail_url: {thumbnail_url[:60]}...')
+                            return frames_b64
+                except Exception:
+                    frames_b64.append(base64.b64encode(img_bytes).decode('utf-8'))
+                    return frames_b64
+        except Exception as te:
+            logger.debug(f'Direct thumbnail download skipped for {thumbnail_url[:60]}: {te}')
 
     try:
         import yt_dlp
@@ -182,6 +216,7 @@ def extract_frames_from_url(
         }
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
+
 
         candidate_urls: List[str] = []
         if info:
@@ -253,7 +288,8 @@ def analyze_video_content(
     raw_title: str = '',
     raw_description: str = '',
     progress_callback = None,
-    skip_audio: bool = True
+    skip_audio: bool = True,
+    thumbnail_url: Optional[str] = None
 ) -> dict:
     resolved_path = video_path or find_video_file_for_request(url, raw_title)
     cache_key = resolved_path or (url if url else raw_title)
@@ -275,11 +311,18 @@ def analyze_video_content(
         if progress_callback:
             progress_callback(30, 'Extracting video frames for visual analysis...')
         frames = extract_video_frames(resolved_path, num_frames=5, max_dim=480, progress_callback=progress_callback)
-    elif url:
+    elif url or thumbnail_url:
         logger.info(f'No local video file found; extracting preview frames from URL: {url}')
         if progress_callback:
             progress_callback(30, 'Extracting preview frame from video URL...')
-        frames = extract_frames_from_url(url, num_frames=5, max_dim=480, progress_callback=progress_callback)
+        frames = extract_frames_from_url(
+            url,
+            num_frames=5,
+            max_dim=480,
+            progress_callback=progress_callback,
+            thumbnail_url=thumbnail_url
+        )
+
 
     if frames:
         # Cloud AI (Google Gemini Flash)

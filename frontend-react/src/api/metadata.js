@@ -13,10 +13,11 @@ export const metadataApi = {
     method: 'POST',
     body: JSON.stringify({ url })
   }),
-  analyze: (title, description, url) => fetchApi('/metadata/analyze', {
+  analyze: (title, description, url, thumbnail_url = '') => fetchApi('/metadata/analyze', {
     method: 'POST',
-    body: JSON.stringify({ title, description, url })
+    body: JSON.stringify({ title, description, url, thumbnail_url })
   }),
+
   getAnalysisStatus: (jobId) => fetchApi(`/api/analyze/status/${jobId}`),
   cancelAnalysis: (jobId) => fetchApi(`/api/analyze/cancel/${jobId}`, {
     method: 'POST'

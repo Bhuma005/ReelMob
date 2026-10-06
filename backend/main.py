@@ -574,6 +574,9 @@ async def get_metadata(req: URLRequest, request: Request):
             title = info.get('title')
             description = info.get('description') or ''
             thumbnail_url = info.get('thumbnail')
+            if clean_url and thumbnail_url:
+                THUMBNAIL_CACHE[clean_url] = thumbnail_url
+
 
             hashtags = []
             seen = set()
@@ -698,17 +701,19 @@ from backend.services.job_store import JobStore
 
 AI_JOBS_STORE: JobStore = JobStore(default_type="ai_analysis")
 AI_CACHE_STORE: Dict[str, dict] = {}
+THUMBNAIL_CACHE: Dict[str, str] = {}
 
 def get_content_hash(url: str, title: str, description: str) -> str:
     combined = f"url:{url or ''}|title:{title or ''}|desc:{description or ''}".strip()
     return hashlib.sha256(combined.encode('utf-8')).hexdigest()
 
-async def execute_ai_analysis_job(job_id: str, title: str, description: str, url: str, video_path: str = "", content_hash: str = ""):
+async def execute_ai_analysis_job(job_id: str, title: str, description: str, url: str, video_path: str = "", content_hash: str = "", thumbnail_url: str = ""):
     if job_id not in AI_JOBS_STORE:
         return
     
     job = AI_JOBS_STORE[job_id]
     content_hash = content_hash or job.get("content_hash")
+    resolved_thumbnail = thumbnail_url or THUMBNAIL_CACHE.get(url, "")
     
     try:
         if job.get("status") == "CANCELLED":
@@ -739,8 +744,10 @@ async def execute_ai_analysis_job(job_id: str, title: str, description: str, url
                 raw_title=title,
                 raw_description=description,
                 video_path=video_path,
-                progress_callback=_update_progress
+                progress_callback=_update_progress,
+                thumbnail_url=resolved_thumbnail
             )
+
 
         if job.get("status") == "CANCELLED":
             return
@@ -962,7 +969,8 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
                 title=req.title,
                 description=req.description,
                 video_path=req.video_path,
-                content_hash=content_hash
+                content_hash=content_hash,
+                thumbnail_url=req.thumbnail_url or ""
             )
             return {
                 "job_id": job_id,
@@ -992,8 +1000,10 @@ async def start_ai_analysis(req: AnalyzeRequest, background_tasks: BackgroundTas
         title=req.title,
         description=req.description,
         video_path=req.video_path,
-        content_hash=content_hash
+        content_hash=content_hash,
+        thumbnail_url=req.thumbnail_url or ""
     )
+
     
     return {
         "job_id": job_id,
