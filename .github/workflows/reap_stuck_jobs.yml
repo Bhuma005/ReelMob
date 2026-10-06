@@ -1,0 +1,38 @@
+name: Stuck Jobs Reaper Poller
+
+on:
+  schedule:
+    # Run every 30 minutes to clean up stalled jobs
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: reap-stuck-jobs
+  cancel-in-progress: false
+
+jobs:
+  reap_stuck_jobs:
+    name: Detect and Fail Stalled Jobs in Supabase
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install supabase python-dotenv
+
+      - name: Run Stuck Job Reaper
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_SERVICE_KEY: ${{ secrets.SUPABASE_SERVICE_KEY }}
+          STUCK_JOB_TIMEOUT_MINUTES: "15"
+        run: |
+          python -m cloud.workflow_reap_stuck_jobs
