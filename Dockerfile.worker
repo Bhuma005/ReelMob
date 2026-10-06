@@ -1,0 +1,43 @@
+# ── ReelMob Worker Image ──────────────────────────────────────────────
+# Headless analysis runner for GitHub Actions (repository_dispatch).
+# Contains: Python 3.11 + ffmpeg + all backend Python deps pre-installed.
+# Does NOT contain: React frontend, node_modules, test files, dev tools.
+#
+# Built and pushed to ghcr.io/bhuma005/reelmob-worker:latest by
+# .github/workflows/build_worker_image.yml so that analyze_video.yml
+# can skip apt-get/pip install entirely (~70-90s saved per run).
+# ──────────────────────────────────────────────────────────────────────
+
+FROM python:3.11-slim
+
+# Install only the system packages the analysis pipeline needs
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends \
+       ffmpeg \
+       curl \
+    && rm -rf /var/lib/apt/lists/*
+
+# Create a non-root user (matches the main Dockerfile convention)
+RUN useradd -m -u 1000 worker
+USER worker
+ENV HOME=/home/worker \
+    PATH=/home/worker/.local/bin:$PATH \
+    PYTHONUNBUFFERED=1
+
+WORKDIR $HOME/app
+
+# Install Python dependencies first (layer cache: only rebuilds when requirements.txt changes)
+COPY --chown=worker:worker backend/requirements.txt ./backend/requirements.txt
+RUN pip install --no-cache-dir --upgrade pip \
+    && pip install --no-cache-dir -r backend/requirements.txt
+
+# Copy backend source and cloud utilities (the only code the worker needs)
+COPY --chown=worker:worker backend/ ./backend/
+COPY --chown=worker:worker cloud/ ./cloud/
+
+# Create downloads scratch directory
+RUN mkdir -p downloads && chmod 755 downloads
+
+# Default entrypoint runs the analysis job script
+ENV PYTHONPATH=/home/worker/app
+ENTRYPOINT ["python", "backend/scripts/run_analysis_job.py"]

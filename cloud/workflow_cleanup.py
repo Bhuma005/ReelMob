@@ -106,5 +106,14 @@ def process_cleanup():
                     "message": f"Storage cleanup failed: {str(e)}"
                 }).execute()
 
+    # Also reap any stuck jobs or expired worker leases
+    try:
+        from cloud.workflow_reap_stuck_jobs import run_reaper
+        print("\nChecking for stuck analysis jobs and expired leases...")
+        run_reaper()
+    except Exception as re:
+        print(f"Stuck job reaper encountered an error during cleanup: {re}")
+
 if __name__ == "__main__":
     process_cleanup()
+
