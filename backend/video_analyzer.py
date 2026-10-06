@@ -207,13 +207,22 @@ def extract_frames_from_url(
 
     try:
         import yt_dlp
+        from backend.services.video_download import resolve_cookie_file, STANDARD_DOWNLOAD_UA
+        cookie_file = resolve_cookie_file()
         ydl_opts = {
             'quiet': True,
             'no_warnings': True,
             'skip_download': True,
             'extract_flat': False,
             'socket_timeout': 10,
+            'http_headers': {
+                'User-Agent': STANDARD_DOWNLOAD_UA,
+                'Accept': '*/*',
+                'Accept-Language': 'en-US,en;q=0.9',
+            },
         }
+        if cookie_file:
+            ydl_opts['cookiefile'] = cookie_file
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=False)
 
