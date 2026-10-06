@@ -28,7 +28,8 @@ async def run_video_analysis(
     raw_description: str = "",
     video_path: str = "",
     progress_callback: Optional[Callable[[int, str], None]] = None,
-    timeout_seconds: Optional[float] = None
+    timeout_seconds: Optional[float] = None,
+    thumbnail_url: Optional[str] = None
 ) -> Dict[str, Any]:
     """
     Executes complete end-to-end video analysis:
@@ -60,10 +61,12 @@ async def run_video_analysis(
                 raw_title=raw_title,
                 raw_description=raw_description,
                 progress_callback=progress_callback,
-                skip_audio=True
+                skip_audio=True,
+                thumbnail_url=thumbnail_url
             ),
             timeout=timeout_seconds
         )
+
     except asyncio.TimeoutError:
         logger.warning(
             f"Video frame analysis timed out after {timeout_seconds}s. "
@@ -157,11 +160,13 @@ async def run_video_analysis(
         }
 
         _notify(100, "AI optimization complete (Cloud AI)")
+        combined_all_tags = list(dict.fromkeys(youtube_tags + instagram_tags))
         return {
             "viral_title": best_title,
             "optimized_description": desc,
             "youtube": youtube_tags,
             "instagram": instagram_tags,
+            "hashtags": combined_all_tags,
             "analysis": (
                 "Generated via ReelsMob Cloud AI using video visual inspection and viral synthesis."
                 if not timed_out else
@@ -176,6 +181,7 @@ async def run_video_analysis(
             "video_analyzed": video_analyzed,
             "fallback_reason": cloud_sub_fallback
         }
+
 
     # ── 2. Cloud AI Fallback / Deterministic or Agent Execution ───────────────
     cloud_keys_present = bool(cloud_ai.get_groq_api_key() or cloud_ai.get_gemini_api_key())

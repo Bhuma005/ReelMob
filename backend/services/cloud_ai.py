@@ -372,9 +372,10 @@ VIRAL_METADATA_SYSTEM_PROMPT = (
     "{\n"
     "  \"title\": \"<High-CTR viral title strictly under 60 chars>\",\n"
     "  \"description\": \"<Structured 2-4 short paragraphs with hook, scene context, and CTA>\",\n"
-    "  \"youtube_hashtags\": [\"#Shorts\", \"#ShortsFeed\", \"#Viral\", ... 5-10 niche tags],\n"
-    "  \"instagram_hashtags\": [\"#Reels\", \"#ExplorePage\", ... 10-18 niche tags]\n"
+    "  \"youtube_hashtags\": [\"#Shorts\", \"#ShortsFeed\", \"#Viral\", ... 12-18 high-volume, niche, and trending tags],\n"
+    "  \"instagram_hashtags\": [\"#Reels\", \"#ExplorePage\", ... 20-30 high-engagement and niche tags]\n"
     "}"
+
 )
 
 
@@ -460,12 +461,13 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
             return {
                 'title': title,
                 'description': parsed.get('description', visual_summary[:250]),
-                'youtube_hashtags': yt_tags[:15],
+                'youtube_hashtags': yt_tags[:20],
                 'instagram_hashtags': ig_tags[:30],
-                'hashtags': all_tags[:25],
+                'hashtags': all_tags[:30],
                 'model': model_name,
                 'success': True
             }
+
         except Exception as e:
             last_err = e
             logger.warning(f"Gemini metadata attempt failed on {model_name}: {e}")
@@ -566,12 +568,13 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
             return {
                 'title': title,
                 'description': parsed.get('description', visual_summary[:250]),
-                'youtube_hashtags': yt_tags[:15],
+                'youtube_hashtags': yt_tags[:20],
                 'instagram_hashtags': ig_tags[:30],
-                'hashtags': all_tags[:25],
+                'hashtags': all_tags[:30],
                 'model': model_name,
                 'success': True
             }
+
         except Exception as e:
             last_groq_error = e
             logger.warning(f"Groq generation attempt with {model_name} failed: {e}")
