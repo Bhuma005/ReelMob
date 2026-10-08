@@ -132,13 +132,13 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
     
     print(f"[{os.path.basename(input_path)}] Size: {in_w}x{in_h} (Ratio: {in_ratio:.3f}) -> Target: {canvas_w}x{canvas_h} (Ratio: {target_ratio:.3f})")
 
-    # Edge Case: Near exact match
-    if abs(in_ratio - target_ratio) < 0.02:
+    # Edge Case: Near exact match (within 3% of 9:16 target)
+    if abs(in_ratio - target_ratio) < 0.03:
         codec, pix_fmt = get_video_codec_and_format(input_path, ffprobe_path)
-        is_standard_h264 = (codec == "h264" and pix_fmt == "yuv420p")
+        is_stream_copyable = codec in ("h264", "hevc", "avc1", "mp4v")
 
-        if is_standard_h264:
-            print("-> Exact or near-exact match with standard H.264 detected. Copying directly with +faststart.")
+        if is_stream_copyable:
+            print(f"-> Exact or near-exact match ({codec}/{pix_fmt}) detected. Direct stream copy with +faststart (zero RAM overhead).")
             cmd = [
                 ffmpeg_path, "-y",
                 "-i", input_path,
@@ -147,12 +147,12 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
                 output_path
             ]
         else:
-            print(f"-> Near-exact match but non-standard stream ({codec}/{pix_fmt}). Re-encoding to H.264/yuv420p with +faststart.")
+            print(f"-> Near-exact match but non-standard stream ({codec}/{pix_fmt}). Re-encoding to H.264/yuv420p with ultrafast preset.")
             cmd = [
                 ffmpeg_path, "-y",
                 "-threads", get_ffmpeg_threads(),
                 "-i", input_path,
-                "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+                "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
                 "-pix_fmt", "yuv420p", "-movflags", "+faststart",
                 "-c:a", "copy",
                 output_path
@@ -176,7 +176,7 @@ def fit_to_canvas(input_path: str, output_path: str, canvas_w: int = 1080, canva
             "-threads", get_ffmpeg_threads(),
             "-i", input_path,
             "-lavfi", filter_complex,
-            "-c:v", "libx264", "-preset", "veryfast", "-crf", "23",
+            "-c:v", "libx264", "-preset", "ultrafast", "-crf", "23",
             "-pix_fmt", "yuv420p", "-movflags", "+faststart",
             "-c:a", "copy", 
             output_path
