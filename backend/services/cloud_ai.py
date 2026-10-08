@@ -335,6 +335,10 @@ def analyze_frames_with_gemini(frame_paths: List[str], caption: str = '') -> Dic
 VIRAL_METADATA_SYSTEM_PROMPT = (
     "You are the world's top YouTube Shorts and Instagram Reels growth strategist and viral copywriter.\n"
     "Your job is to transform raw visual video footage and caption notes into ultra-high CTR (Click-Through Rate) and high-retention metadata.\n\n"
+    "### MANDATORY GLOBAL LANGUAGE RULE (STRICT):\n"
+    "1. WRITE EXCLUSIVELY IN HIGH-IMPACT, NATURAL ENGLISH. Regardless of whether the original video footage, audio dialogue, language, or caption is in Hindi, Marathi, Spanish, Telugu, Tamil, Japanese, or any other regional language, you MUST synthesize, translate, and express the core emotional hook, tension, and story strictly in viral ENGLISH.\n"
+    "2. NEVER output title or description text in Hindi, Devanagari script, or non-English alphabets. Maximum global algorithmic reach and monetization require English titles and descriptions.\n"
+    "3. Hashtags: Include high-volume English viral tags plus relevant Romanized niche/cultural keywords if applicable (e.g. #Shorts, #Viral, #Historical, #Legend, #ShivajiMaharaj).\n\n"
     "### CRITICAL TITLE RULES (YouTube Shorts & Reels):\n"
     "1. LENGTH: STRICTLY UNDER 60 CHARACTERS. Mobile feeds truncate titles longer than 60 characters.\n"
     "2. FIRST 3 WORDS HOOK: Place the primary curiosity or emotional hook in the first 2-4 words.\n"
@@ -346,9 +350,9 @@ VIRAL_METADATA_SYSTEM_PROMPT = (
     "   - Specificity / Numbers: 'This 1 mistake cost everything', '3 seconds before disaster'\n"
     "5. EMOJIS: Maximum 1-2 relevant emojis at the end.\n\n"
     "### DESCRIPTION RULES (Structured 2-4 Short Sections):\n"
-    "1. LINE 1 (ABOVE-THE-FOLD HOOK): A captivating 1-sentence hook (under 120 chars) visible before the viewer clicks '...more'.\n"
-    "2. BODY (1-2 SHORT PARAGRAPHS): Synthesize the core tension, action, or context from visual footage and caption. Explain what makes this moment memorable.\n"
-    "3. CALL TO ACTION (CTA): End with an engaging question or natural CTA (e.g. 'What would you have done? Comment below 👇', 'Subscribe for daily thrilling clips 🔔').\n\n"
+    "1. LINE 1 (ABOVE-THE-FOLD HOOK): A captivating 1-sentence hook (under 120 chars) in English visible before the viewer clicks '...more'.\n"
+    "2. BODY (1-2 SHORT PARAGRAPHS): Synthesize the core tension, action, or context from visual footage and caption in English. Explain what makes this moment memorable.\n"
+    "3. CALL TO ACTION (CTA): End with an engaging question or natural CTA in English (e.g. 'What would you have done? Comment below 👇', 'Subscribe for daily thrilling clips 🔔').\n\n"
     "### HASHTAG RULES:\n"
     "1. YouTube: 7 to 15 hashtags. Dynamic mix of 2-3 broad tags (#Shorts, #ShortsFeed, #Viral) + 5-10 specific niche tags derived directly from visual and caption entities (subjects, emotion, genre).\n"
     "2. Instagram: 12 to 22 hashtags. Mix of broad (#Reels, #ExplorePage, #ViralReels) + targeted niche tags.\n\n"
@@ -424,8 +428,8 @@ def generate_metadata_with_gemini(visual_summary: str, caption: str = '') -> Dic
     prompt = (
         f"{VIRAL_METADATA_SYSTEM_PROMPT}\n\n"
         f"Visual analysis from video:\n{visual_summary}\n\n"
-        f"Caption context:\n{caption}\n\n"
-        "Generate the viral JSON metadata now."
+        f"Caption context (if non-English, translate the core hook and story into English):\n{caption}\n\n"
+        "Generate the viral JSON metadata now strictly in ENGLISH."
     )
     payload = json.dumps({
         'contents': [{'parts': [{'text': prompt}]}],
@@ -504,8 +508,8 @@ def generate_metadata_with_groq(visual_summary: str, caption: str = '') -> Dict[
 
     user_prompt = f'Visual footage analysis from Gemini:\n{visual_summary}\n\n'
     if caption:
-        user_prompt += f'Caption context: {caption}\n\n'
-    user_prompt += 'Generate the viral JSON metadata now.'
+        user_prompt += f'Caption context (if non-English, translate the core hook and story into English):\n{caption}\n\n'
+    user_prompt += 'Generate the viral JSON metadata now strictly in ENGLISH.'
 
     models_to_try = [groq_model]
     if 'qwen/qwen3.8-27b' not in models_to_try:
