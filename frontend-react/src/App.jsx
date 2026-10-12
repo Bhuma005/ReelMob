@@ -18,6 +18,8 @@ const AnalyticsPage = lazy(() => import('./pages/AnalyticsPage'));
 const ConnectionsPage = lazy(() => import('./pages/ConnectionsPage'));
 const LogsPage = lazy(() => import('./pages/LogsPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
+const PrivacyPolicyPage = lazy(() => import('./pages/PrivacyPolicyPage'));
+const TermsOfServicePage = lazy(() => import('./pages/TermsOfServicePage'));
 const ComponentGallery = lazy(() => import('./pages/dev/ComponentGallery'));
 
 
@@ -86,6 +88,8 @@ export default function App() {
                 <Route path="connections" element={<ConnectionsPage />} />
                 <Route path="logs" element={<LogsPage />} />
                 <Route path="settings" element={<SettingsPage />} />
+                <Route path="privacy" element={<PrivacyPolicyPage />} />
+                <Route path="terms" element={<TermsOfServicePage />} />
                 
                 {/* Dev component gallery route (development only) */}
                 {import.meta.env.DEV && (
