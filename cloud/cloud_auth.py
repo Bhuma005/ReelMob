@@ -36,12 +36,26 @@ def get_youtube_creds() -> dict:
     Returns a dict with: client_id, client_secret, refresh_token.
     Loads from env vars if present (GitHub Actions), otherwise from local files.
     """
-    # 1. Environment variables (GitHub Actions secrets or Render config)
+    # 1. Environment variables for client ID / secret (GitHub Actions secrets or Render config)
     client_id     = os.getenv("YT_CLIENT_ID") or os.getenv("GOOGLE_CLIENT_ID") or os.getenv("YOUTUBE_CLIENT_ID")
     client_secret = os.getenv("YT_CLIENT_SECRET") or os.getenv("GOOGLE_CLIENT_SECRET") or os.getenv("YOUTUBE_CLIENT_SECRET")
-    refresh_token = os.getenv("YT_REFRESH_TOKEN")
+    refresh_token = None
 
-    # If client_id/secret not in env, check local secrets file
+    # 2. Dynamic single source of truth: Supabase oauth_tokens table
+    try:
+        sb = get_supabase_client()
+        res = sb.table("oauth_tokens").select("refresh_token, access_token").eq("provider", "youtube").execute()
+        data = getattr(res, "data", None) or []
+        if data and data[0].get("refresh_token"):
+            refresh_token = data[0]["refresh_token"]
+    except Exception as sb_err:
+        logger.warning(f"Could not read YouTube OAuth tokens from Supabase: {sb_err}")
+
+    # 3. Fallback to Environment variables (GitHub Actions secrets or manual env config)
+    if not refresh_token:
+        refresh_token = os.getenv("YT_REFRESH_TOKEN")
+
+    # 4. If client_id/secret not in env, check local secrets file
     if not (client_id and client_secret) and _SECRETS_FILE.exists():
         try:
             with open(_SECRETS_FILE, encoding="utf-8") as f:
@@ -52,7 +66,7 @@ def get_youtube_creds() -> dict:
         except Exception:
             pass
 
-    # If refresh_token not in env, check local credentials file
+    # 5. If refresh_token not in Supabase or env, check local credentials file
     if not refresh_token and _CREDS_FILE.exists():
         try:
             with open(_CREDS_FILE, encoding="utf-8") as f:
@@ -62,17 +76,6 @@ def get_youtube_creds() -> dict:
             client_secret = client_secret or creds.get("client_secret")
         except Exception:
             pass
-
-    # If refresh_token still not found, check Supabase oauth_tokens table
-    if not refresh_token:
-        try:
-            sb = get_supabase_client()
-            res = sb.table("oauth_tokens").select("refresh_token, access_token").eq("provider", "youtube").execute()
-            data = getattr(res, "data", None) or []
-            if data and data[0].get("refresh_token"):
-                refresh_token = data[0]["refresh_token"]
-        except Exception as sb_err:
-            logger.warning(f"Could not read YouTube OAuth tokens from Supabase: {sb_err}")
 
     if client_id and client_secret and refresh_token:
         return {

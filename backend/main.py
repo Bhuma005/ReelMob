@@ -2211,7 +2211,13 @@ async def publish_dashboard_video(video_id: str):
     except HTTPException:
         raise
     except Exception as e:
+        err_str = str(e)
         logger.error(f"Publish error: {e}")
+        if "invalid_grant" in err_str or "Token has been expired or revoked" in err_str:
+            raise HTTPException(
+                status_code=401,
+                detail="YouTube authorization expired or revoked. Please go to Connections (/connections) and click 'Connect YouTube' to re-authenticate."
+            )
         raise HTTPException(status_code=500, detail=f"Publish error: {str(e)}")
 
 
