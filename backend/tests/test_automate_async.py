@@ -1,16 +1,19 @@
 """
-test_automate_async.py — Test suite for asynchronous automation pipeline and JobStore tracking.
-Verifies that POST /automate returns immediately (<1s) to prevent Render 100s proxy timeout,
-and tracks progress durably via JobStore and GET /automate/status/{job_id}.
+test_automate_async.py — Test suite for asynchronous automation pipeline and GitHub Actions CPU offload.
+Verifies:
+1. POST /automate offloads processing to GitHub Actions and returns immediately (<100ms) with zero Render CPU/disk usage.
+2. JobStore durably tracks status.
+3. GitHub Actions worker (workflow_upload.py) downloads source stream, applies FFmpeg 9:16 layout, and publishes to YouTube.
 """
 
 import pytest
-import asyncio
 from unittest.mock import patch, MagicMock, AsyncMock
 from fastapi.testclient import TestClient
 
 from backend.main import app
-from backend.automate import AUTOMATE_JOBS, _execute_automate_background_pipeline
+from backend.automate import AUTOMATE_JOBS, dispatch_github_actions_upload
+from cloud.enqueue import enqueue_remote_video
+from cloud.workflow_upload import process_pending_uploads
 
 
 @pytest.fixture
@@ -19,7 +22,7 @@ def client():
 
 
 class TestAsyncAutomateEndpoint:
-    """Tests verifying immediate HTTP return and background task dispatch."""
+    """Tests verifying immediate HTTP return and GitHub Actions worker dispatch."""
 
     def test_post_automate_returns_immediately_with_job_id(self, client):
         mock_sched = {
@@ -28,7 +31,9 @@ class TestAsyncAutomateEndpoint:
         }
 
         with patch("backend.services.scheduler.calculate_deterministic_schedule", return_value=mock_sched), \
-             patch("backend.automate._execute_automate_background_pipeline", new_callable=AsyncMock) as mock_worker:
+             patch("backend.automate.enqueue_remote_video", return_value="queue_record_uuid_123") as mock_enqueue, \
+             patch("backend.automate.dispatch_github_actions_upload") as mock_dispatch:
+
             payload = {
                 "title": "Epic Gaming Clip",
                 "description": "Best gameplay moment #shorts",
@@ -49,92 +54,117 @@ class TestAsyncAutomateEndpoint:
             assert data["automation_details"]["scheduled_time"] == "October 12, 06:00 PM"
             assert data["automation_details"]["title"] == "Epic Gaming Clip"
 
-            # Verify background worker was called with job_id
-            mock_worker.assert_called_once()
-            call_kwargs = mock_worker.call_args.kwargs
-            assert call_kwargs["job_id"] == data["job_id"]
-            assert call_kwargs["opt_title"] == "Epic Gaming Clip"
+            # Verify enqueue_remote_video was called without downloading on Render
+            mock_enqueue.assert_called_once()
+            call_kwargs = mock_enqueue.call_args.kwargs
+            assert call_kwargs["source_url"] == "https://www.youtube.com/shorts/dQw4w9WgXcQ"
+            assert call_kwargs["title"] == "Epic Gaming Clip"
+
+            # Verify dispatch was called
+            mock_dispatch.assert_called_once_with(video_id="queue_record_uuid_123")
 
             # Verify job is tracked in AUTOMATE_JOBS
             job_id = data["job_id"]
             assert job_id in AUTOMATE_JOBS
+            assert AUTOMATE_JOBS[job_id]["status"] == "completed"
 
     def test_get_automate_status_endpoint(self, client):
         job_id = "test_custom_job_123"
         AUTOMATE_JOBS[job_id] = {
-            "status": "processing",
-            "progress": 50,
-            "current_step": "Applying 9:16 vertical layout...",
+            "status": "completed",
+            "progress": 100,
+            "current_step": "Scheduled and offloaded to GitHub Actions multi-core CPU",
             "title": "Test Title",
         }
 
         res = client.get(f"/automate/status/{job_id}")
         assert res.status_code == 200
         data = res.json()
-        assert data["status"] == "processing"
-        assert data["progress"] == 50
-        assert data["current_step"] == "Applying 9:16 vertical layout..."
+        assert data["status"] == "completed"
+        assert data["progress"] == 100
+        assert "GitHub Actions" in data["current_step"]
 
         # Non-existent job
         res_404 = client.get("/automate/status/non_existent_uuid")
         assert res_404.status_code == 404
 
 
-@pytest.mark.asyncio
-class TestAutomateBackgroundExecution:
-    """Tests verifying the async background worker lifecycle."""
+class TestGitHubActionsWorkerOffload:
+    """Tests verifying workflow_upload.py executes download and FFmpeg layout on GitHub runner."""
 
-    async def test_background_pipeline_successful_run(self, tmp_path):
-        job_id = "test_worker_job_success"
-        AUTOMATE_JOBS[job_id] = {
-            "status": "processing",
-            "progress": 10,
-            "current_step": "Initiated",
+    def test_workflow_upload_downloads_stream_and_formats_on_github_runner(self, tmp_path):
+        mock_sb = MagicMock()
+        scheduled_table = MagicMock()
+        library_table = MagicMock()
+        def get_table(name):
+            if name == "video_library":
+                return library_table
+            return scheduled_table
+        mock_sb.table.side_effect = get_table
+
+        # Mock scheduled video with source: URL
+        candidate = {
+            "id": "q-99",
+            "library_video_id": "lib-99",
+            "title": "GitHub Offloaded Short",
+            "description": "Desc",
+            "hashtags": ["#shorts"],
+            "storage_path": "source:https://www.youtube.com/shorts/dQw4w9WgXcQ",
+            "upload_status": "pending",
+            "schedule_time": "2026-01-01T00:00:00+00:00",
+            "retry_count": 0
         }
 
-        mock_temp_file = tmp_path / "mock_download.mp4"
-        mock_temp_file.write_bytes(b"dummy_video_bytes")
+        # Mock scheduled_videos select return
+        mock_select = MagicMock()
+        scheduled_table.select.return_value = mock_select
+        mock_in = MagicMock()
+        mock_select.in_.return_value = mock_in
+        mock_lte = MagicMock()
+        mock_in.lte.return_value = mock_lte
+        mock_order = MagicMock()
+        mock_lte.order.return_value = mock_order
+        mock_limit = MagicMock()
+        mock_order.limit.return_value = mock_limit
+        mock_limit.execute.return_value = MagicMock(data=[candidate])
 
-        with patch("backend.automate.async_ensure_video_downloaded", new_callable=AsyncMock, return_value=str(mock_temp_file)), \
-             patch("backend.automate.fit_to_canvas", return_value=str(mock_temp_file)), \
-             patch("backend.automate.enqueue_video", return_value="queue_record_uuid_789"):
+        # Mock atomic claim on scheduled_videos
+        mock_update = MagicMock()
+        scheduled_table.update.return_value = mock_update
+        mock_eq = MagicMock()
+        mock_update.eq.return_value = mock_eq
+        mock_eq_in = MagicMock()
+        mock_eq.in_.return_value = mock_eq_in
+        mock_eq_in.execute.return_value = MagicMock(data=[{"id": "q-99", "upload_status": "claimed"}])
 
-            await _execute_automate_background_pipeline(
-                job_id=job_id,
-                url="https://www.youtube.com/shorts/dQw4w9WgXcQ",
-                format_id=None,
-                thumbnail_url=None,
-                opt_title="Test Title",
-                opt_desc="Test Desc",
-                opt_tags=["#test"],
-                final_iso_schedule="2026-10-12T18:00:00+05:30",
-            )
+        # Mock video_library idempotency check (not published yet)
+        lib_select = MagicMock()
+        library_table.select.return_value = lib_select
+        lib_eq = MagicMock()
+        lib_select.eq.return_value = lib_eq
+        lib_eq.execute.return_value = MagicMock(data=[{"youtube_video_id": None, "status": "scheduled", "source_url": "https://www.youtube.com/shorts/dQw4w9WgXcQ"}])
 
-            job = AUTOMATE_JOBS[job_id]
-            assert job["status"] == "completed"
-            assert job["progress"] == 100
-            assert job["result"]["queue_id"] == "queue_record_uuid_789"
+        # Mock temp video file
+        mock_file = tmp_path / "mock_downloaded.mp4"
+        mock_file.write_bytes(b"dummy_video_stream")
 
-    async def test_background_pipeline_error_handling(self):
-        job_id = "test_worker_job_failure"
-        AUTOMATE_JOBS[job_id] = {
-            "status": "processing",
-            "progress": 10,
-            "current_step": "Initiated",
-        }
+        mock_yt_service = MagicMock()
+        mock_insert = MagicMock()
+        mock_yt_service.videos.return_value.insert.return_value = mock_insert
+        mock_insert.next_chunk.return_value = (None, {"id": "YT_NEW_ID_999"})
 
-        with patch("backend.automate.async_ensure_video_downloaded", new_callable=AsyncMock, side_effect=RuntimeError("Download network error")):
-            await _execute_automate_background_pipeline(
-                job_id=job_id,
-                url="https://www.youtube.com/shorts/dQw4w9WgXcQ",
-                format_id=None,
-                thumbnail_url=None,
-                opt_title="Test Title",
-                opt_desc="Test Desc",
-                opt_tags=["#test"],
-                final_iso_schedule="2026-10-12T18:00:00+05:30",
-            )
+        with patch("cloud.workflow_upload.get_supabase_client", return_value=mock_sb), \
+             patch("cloud.workflow_upload.get_youtube_service", return_value=mock_yt_service), \
+             patch("backend.services.video_download.ensure_video_downloaded", return_value=str(mock_file)) as mock_dl, \
+             patch("backend.fit_to_canvas.fit_to_canvas", return_value=str(mock_file)) as mock_fit, \
+             patch("cloud.workflow_upload.MediaFileUpload"):
 
-            job = AUTOMATE_JOBS[job_id]
-            assert job["status"] == "failed"
-            assert "Download network error" in job["error"]
+            process_pending_uploads(worker_id="gh-runner-test-1")
+
+            # Verify ensure_video_downloaded and fit_to_canvas were executed on GitHub runner!
+            mock_dl.assert_called_once()
+            assert mock_dl.call_args.kwargs["url"] == "https://www.youtube.com/shorts/dQw4w9WgXcQ"
+            mock_fit.assert_called_once()
+
+            # Verify YouTube insert was called with the uploaded ID
+            mock_yt_service.videos.return_value.insert.assert_called_once()

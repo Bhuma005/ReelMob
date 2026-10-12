@@ -162,6 +162,85 @@ def enqueue_video(
     return library_id
 
 
+def enqueue_remote_video(
+    source_url: str,
+    title: str,
+    description: str,
+    hashtags: list[str],
+    schedule_time: str,
+    thumbnail_url: str = None,
+) -> str:
+    """
+    Directly enqueues a video for GitHub Actions offload without downloading or 
+    encoding video files on Render's constrained 0.1 vCPU.
+    GitHub Actions runner downloads via yt-dlp, formats with FFmpeg 9:16 layout,
+    and uploads to YouTube using its high-speed multi-core CPU.
+    """
+    sb = get_supabase_client()
+
+    dt = datetime.fromisoformat(schedule_time)
+    if dt.tzinfo is None:
+        print("⚠️  schedule_time has no timezone — assuming UTC.")
+        dt = dt.replace(tzinfo=timezone.utc)
+    schedule_utc = dt.astimezone(timezone.utc).isoformat()
+
+    storage_path = f"source:{source_url}"
+
+    # 1. Create Permanent Library Record
+    print("[DB] Creating permanent library record (offloaded to GitHub Actions CPU)...")
+    lib_row = {
+        "title": title,
+        "description": description,
+        "hashtags": hashtags,
+        "schedule_time": schedule_utc,
+        "status": "scheduled",
+        "storage_path": storage_path,
+        "source_url": source_url,
+        "thumbnail_url": thumbnail_url
+    }
+    lib_res = sb.table("video_library").insert(lib_row).execute()
+    library_id = lib_res.data[0]["id"]
+    print(f"[DB] ✅ Library record created: {library_id}")
+
+    # 2. Log VIDEO_CREATED
+    sb.table("video_activity_log").insert({
+        "video_id": library_id,
+        "event_type": "VIDEO_CREATED",
+        "message": f"Library record created for {title} (Offloaded to GitHub Actions CPU)"
+    }).execute()
+
+    # 3. Insert Queue Row (scheduled_videos)
+    queue_row = {
+        "title":         title,
+        "description":   description,
+        "hashtags":      hashtags,
+        "storage_path":  storage_path,
+        "schedule_time": schedule_utc,
+        "upload_status": "pending",
+        "library_video_id": library_id
+    }
+    try:
+        queue_res = sb.table("scheduled_videos").insert(queue_row).execute()
+        queue_id = queue_res.data[0]["id"]
+        print(f"[DB] ✅ Queued in scheduled_videos: {queue_id}")
+    except Exception as e:
+        print(f"[DB] ❌ Queue insert failed: {e}")
+        try:
+            sb.table("video_library").delete().eq("id", library_id).execute()
+        except Exception:
+            pass
+        raise e
+
+    # 4. Log VIDEO_SCHEDULED
+    sb.table("video_activity_log").insert({
+        "video_id": library_id,
+        "event_type": "VIDEO_SCHEDULED",
+        "message": f"Video scheduled for {schedule_utc} on GitHub Actions worker (Queue ID: {queue_id})"
+    }).execute()
+
+    return library_id
+
+
 # ── CLI entry point ───────────────────────────────────────────────────────────
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Enqueue a video for cloud upload")

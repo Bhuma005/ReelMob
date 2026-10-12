@@ -7,6 +7,8 @@ on:
   
   # Allow manual triggering from the GitHub Actions UI for testing
   workflow_dispatch:
+  repository_dispatch:
+    types: [trigger-upload]
 
 concurrency:
   # Prevent multiple poller instances from running concurrently
@@ -30,8 +32,8 @@ jobs:
 
       - name: Install dependencies
         run: |
-          # Only installing what's needed for the cloud worker
-          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib supabase python-dotenv
+          # Install dependencies for cloud worker and stream processing
+          pip install google-api-python-client google-auth-httplib2 google-auth-oauthlib supabase python-dotenv yt-dlp
           
       - name: Run Upload Workflow
         env:
@@ -41,5 +43,6 @@ jobs:
           YT_CLIENT_ID: ${{ secrets.YT_CLIENT_ID }}
           YT_CLIENT_SECRET: ${{ secrets.YT_CLIENT_SECRET }}
           YT_REFRESH_TOKEN: ${{ secrets.YT_REFRESH_TOKEN }}
+          PYTHONPATH: .
         run: |
           python -m cloud.workflow_upload

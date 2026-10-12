@@ -51,98 +51,59 @@ class AutomateRequest(BaseModel):
     target_region: Optional[str] = "India"
 
 
+import urllib.request
+import json
 from backend.services.job_store import JobStore
+from cloud.enqueue import enqueue_video, enqueue_remote_video
 
 AUTOMATE_JOBS: JobStore = JobStore(default_type="cloud_automation")
 
 
-async def _execute_automate_background_pipeline(
-    job_id: str,
-    url: str,
-    format_id: Optional[str],
-    thumbnail_url: Optional[str],
-    opt_title: str,
-    opt_desc: str,
-    opt_tags: List[str],
-    final_iso_schedule: str,
-):
-    downloads_dir = Path(__file__).parent.parent / "downloads"
-    downloads_dir.mkdir(exist_ok=True)
-    temp_filepath = None
-    fitted_filepath = None
+def dispatch_github_actions_upload(video_id: str = "") -> bool:
+    """
+    Fires repository_dispatch event to trigger GitHub Actions upload_poller.yml workflow.
+    Uses GitHub Actions high-speed multi-core CPU and gigabit network to process the video.
+    """
+    token = (os.getenv("GITHUB_DISPATCH_TOKEN") or os.getenv("GITHUB_TOKEN") or "").strip()
+    if not token:
+        logger.info("GITHUB_DISPATCH_TOKEN not set. Video queued in Supabase for scheduled GitHub Actions poller.")
+        return False
+
+    repo = os.getenv("GITHUB_REPOSITORY", "Bhuma005/ReelMob").strip()
+    url = f"https://api.github.com/repos/{repo}/dispatches"
+
+    payload = {
+        "event_type": "trigger-upload",
+        "client_payload": {
+            "video_id": video_id
+        }
+    }
+
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Accept": "application/vnd.github+json",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "Content-Type": "application/json",
+            "User-Agent": "ReelsMob-Backend"
+        },
+        method="POST"
+    )
+
     try:
-        if job_id in AUTOMATE_JOBS:
-            AUTOMATE_JOBS[job_id]["progress"] = 25
-            AUTOMATE_JOBS[job_id]["current_step"] = "Downloading source video stream..."
-
-        temp_filepath = await async_ensure_video_downloaded(
-            url=url,
-            target_dir=str(downloads_dir),
-            format_id=format_id,
-            prefix="auto_"
-        )
-
-        if job_id in AUTOMATE_JOBS:
-            AUTOMATE_JOBS[job_id]["progress"] = 50
-            AUTOMATE_JOBS[job_id]["current_step"] = "Applying 9:16 vertical layout & canvas..."
-
-        fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
-        try:
-            import gc
-            gc.collect()
-            from backend.services.resource_limits import heavy_job_gate
-            logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
-            async with heavy_job_gate("automate_fit_to_canvas"):
-                await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
-            gc.collect()
-            if os.path.exists(fitted_filepath) and os.path.getsize(fitted_filepath) > 0:
-                if os.path.exists(temp_filepath):
-                    os.remove(temp_filepath)
-                temp_filepath = fitted_filepath
-        except Exception as e:
-            logger.error(f"Fit-to-canvas failed: {e}")
-            # non-fatal fallback: use temp_filepath as-is
-
-        if job_id in AUTOMATE_JOBS:
-            AUTOMATE_JOBS[job_id]["progress"] = 75
-            AUTOMATE_JOBS[job_id]["current_step"] = "Uploading to Cloud Storage & Scheduling..."
-
-        logger.info("⬆️ Sending securely to Supabase Cloud...")
-        new_id = await asyncio.to_thread(
-            enqueue_video,
-            file_path=temp_filepath,
-            title=opt_title,
-            description=opt_desc,
-            hashtags=opt_tags,
-            schedule_time=final_iso_schedule,
-            source_url=url,
-            thumbnail_url=thumbnail_url
-        )
-        logger.info(f"✅ Video enqueued in cloud with DB ID: {new_id}")
-
-        if job_id in AUTOMATE_JOBS:
-            AUTOMATE_JOBS[job_id]["status"] = "completed"
-            AUTOMATE_JOBS[job_id]["progress"] = 100
-            AUTOMATE_JOBS[job_id]["current_step"] = "Video scheduled successfully"
-            AUTOMATE_JOBS[job_id]["result"] = {"queue_id": new_id}
-
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            if resp.status in (200, 204):
+                logger.info(f"✅ Successfully dispatched GitHub Actions upload worker for video {video_id} on {repo}")
+                return True
+            return False
     except Exception as e:
-        logger.error(f"Cloud upload/process failed in background: {e}", exc_info=True)
-        if job_id in AUTOMATE_JOBS:
-            AUTOMATE_JOBS[job_id]["status"] = "failed"
-            AUTOMATE_JOBS[job_id]["error"] = str(e)
-            AUTOMATE_JOBS[job_id]["current_step"] = f"Failed: {str(e)}"
-    finally:
-        for f in (temp_filepath, fitted_filepath):
-            if f and os.path.exists(f):
-                logger.info(f"🧹 Cleaning up local temporary video file: {f}")
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
+        logger.warning(f"GitHub Actions dispatch skipped or failed: {e}")
+        return False
 
 
-@router.post("/automate", summary="Trigger Cloud Automation Pipeline", description="Downloads video, applies layout, and schedules for upload to Supabase.")
+@router.post("/automate", summary="Trigger Cloud Automation Pipeline", description="Schedules video and offloads heavy download/encode/upload to GitHub Actions.")
 async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTasks):
     logger.info(f"🚀 Starting automation pipeline for: {req.url}")
     
@@ -204,33 +165,40 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
             final_iso_schedule = target_dt.astimezone().isoformat()
             human_readable_time = target_dt.strftime("%B %d, %I:%M %p")
 
-    # Queue durable background task so HTTP response completes in <1s (prevents Render 100s proxy timeout)
+    # Offload queue insertion to Supabase (Zero Render CPU & Disk usage)
+    try:
+        new_id = await asyncio.to_thread(
+            enqueue_remote_video,
+            source_url=req.url,
+            title=opt_title,
+            description=opt_desc,
+            hashtags=opt_tags,
+            schedule_time=final_iso_schedule,
+            thumbnail_url=req.thumbnail_url
+        )
+        logger.info(f"✅ Video enqueued in cloud with DB ID: {new_id} (Offloaded to GitHub Actions CPU)")
+    except Exception as e:
+        logger.error(f"Cloud Queue insert failed: {e}")
+        raise HTTPException(status_code=500, detail=f"Cloud Scheduling failed: {str(e)}")
+
+    # Dispatch to GitHub Actions runner in background
+    background_tasks.add_task(dispatch_github_actions_upload, video_id=new_id)
+
     job_id = uuid.uuid4().hex
     AUTOMATE_JOBS[job_id] = {
-        "status": "processing",
-        "progress": 10,
-        "current_step": "Pipeline initiated, downloading video in background...",
+        "status": "completed",
+        "progress": 100,
+        "current_step": "Scheduled and offloaded to GitHub Actions multi-core CPU",
         "title": opt_title,
         "url": req.url,
         "schedule_time": final_iso_schedule,
+        "result": {"queue_id": new_id}
     }
-
-    background_tasks.add_task(
-        _execute_automate_background_pipeline,
-        job_id=job_id,
-        url=req.url,
-        format_id=req.format_id,
-        thumbnail_url=req.thumbnail_url,
-        opt_title=opt_title,
-        opt_desc=opt_desc,
-        opt_tags=opt_tags,
-        final_iso_schedule=final_iso_schedule,
-    )
 
     return {
         "status": "success",
         "job_id": job_id,
-        "message": "Automation pipeline triggered successfully",
+        "message": "Automation pipeline scheduled successfully and offloaded to GitHub Actions",
         "automation_details": {
             "title":              opt_title,
             "description":        opt_desc,
@@ -238,7 +206,7 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
             "scheduled_time":     human_readable_time,
             "iso_schedule":       final_iso_schedule,
             "reasoning":          "Peak engagement window.",
-            "confidence_notes":   "",
+            "confidence_notes":   "Offloaded to GitHub Actions multi-core runner.",
             "post_status":        "Scheduled 🚀",
             "model_used":         "Pre-calculated in frontend"
         }

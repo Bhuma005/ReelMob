@@ -173,12 +173,54 @@ def process_pending_uploads(worker_id: Optional[str] = None):
             if yt_service is None:
                 yt_service = get_youtube_service()
 
-            print(f"  ⬇️ Downloading {storage_path} from Supabase...")
-            file_data = sb.storage.from_(BUCKET).download(storage_path)
-            
-            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-                tmp.write(file_data)
-                local_path = tmp.name
+            local_path = None
+            source_url = None
+            if storage_path and storage_path.startswith("source:"):
+                source_url = storage_path[len("source:"):].strip()
+            elif library_id:
+                try:
+                    lib_res = sb.table("video_library").select("source_url, storage_path").eq("id", library_id).execute()
+                    if lib_res.data:
+                        lib_info = lib_res.data[0]
+                        if not storage_path or not storage_path.startswith("videos/"):
+                            source_url = lib_info.get("source_url")
+                except Exception as le:
+                    print(f"  Could not read video_library source_url: {le}")
+
+            if source_url:
+                print(f"  ⚡ [GitHub CPU Offload] Downloading source video stream directly on GitHub runner: {source_url}")
+                from backend.services.video_download import ensure_video_downloaded
+                from backend.fit_to_canvas import fit_to_canvas
+
+                runner_dir = Path(tempfile.gettempdir()) / "gh_runner_downloads"
+                runner_dir.mkdir(exist_ok=True)
+
+                downloaded_file = ensure_video_downloaded(
+                    url=source_url,
+                    target_dir=str(runner_dir),
+                    prefix="gh_worker_"
+                )
+                local_path = downloaded_file
+
+                print(f"  🎬 [GitHub CPU Offload] Applying FFmpeg 9:16 vertical canvas...")
+                fitted_path = str(runner_dir / f"{uuid.uuid4().hex}_fitted.mp4")
+                try:
+                    fit_to_canvas(local_path, fitted_path, 1080, 1920)
+                    if os.path.exists(fitted_path) and os.path.getsize(fitted_path) > 0:
+                        if os.path.exists(local_path):
+                            try:
+                                os.remove(local_path)
+                            except Exception:
+                                pass
+                        local_path = fitted_path
+                except Exception as fe:
+                    print(f"  ⚠️ Fit-to-canvas fallback on runner: {fe}")
+            else:
+                print(f"  ⬇️ Downloading {storage_path} from Supabase...")
+                file_data = sb.storage.from_(BUCKET).download(storage_path)
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+                    tmp.write(file_data)
+                    local_path = tmp.name
 
             print(f"  ⬆️ Uploading to YouTube...")
             full_desc = desc
