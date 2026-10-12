@@ -5,4 +5,5 @@ export const automationApi = {
     method: 'POST',
     body: JSON.stringify(payload)
   }),
+  getJobStatus: (jobId) => fetchApi(`/automate/status/${jobId}`),
 };

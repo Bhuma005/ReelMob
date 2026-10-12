@@ -51,6 +51,97 @@ class AutomateRequest(BaseModel):
     target_region: Optional[str] = "India"
 
 
+from backend.services.job_store import JobStore
+
+AUTOMATE_JOBS: JobStore = JobStore(default_type="cloud_automation")
+
+
+async def _execute_automate_background_pipeline(
+    job_id: str,
+    url: str,
+    format_id: Optional[str],
+    thumbnail_url: Optional[str],
+    opt_title: str,
+    opt_desc: str,
+    opt_tags: List[str],
+    final_iso_schedule: str,
+):
+    downloads_dir = Path(__file__).parent.parent / "downloads"
+    downloads_dir.mkdir(exist_ok=True)
+    temp_filepath = None
+    fitted_filepath = None
+    try:
+        if job_id in AUTOMATE_JOBS:
+            AUTOMATE_JOBS[job_id]["progress"] = 25
+            AUTOMATE_JOBS[job_id]["current_step"] = "Downloading source video stream..."
+
+        temp_filepath = await async_ensure_video_downloaded(
+            url=url,
+            target_dir=str(downloads_dir),
+            format_id=format_id,
+            prefix="auto_"
+        )
+
+        if job_id in AUTOMATE_JOBS:
+            AUTOMATE_JOBS[job_id]["progress"] = 50
+            AUTOMATE_JOBS[job_id]["current_step"] = "Applying 9:16 vertical layout & canvas..."
+
+        fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
+        try:
+            import gc
+            gc.collect()
+            from backend.services.resource_limits import heavy_job_gate
+            logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
+            async with heavy_job_gate("automate_fit_to_canvas"):
+                await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
+            gc.collect()
+            if os.path.exists(fitted_filepath) and os.path.getsize(fitted_filepath) > 0:
+                if os.path.exists(temp_filepath):
+                    os.remove(temp_filepath)
+                temp_filepath = fitted_filepath
+        except Exception as e:
+            logger.error(f"Fit-to-canvas failed: {e}")
+            # non-fatal fallback: use temp_filepath as-is
+
+        if job_id in AUTOMATE_JOBS:
+            AUTOMATE_JOBS[job_id]["progress"] = 75
+            AUTOMATE_JOBS[job_id]["current_step"] = "Uploading to Cloud Storage & Scheduling..."
+
+        logger.info("⬆️ Sending securely to Supabase Cloud...")
+        new_id = await asyncio.to_thread(
+            enqueue_video,
+            file_path=temp_filepath,
+            title=opt_title,
+            description=opt_desc,
+            hashtags=opt_tags,
+            schedule_time=final_iso_schedule,
+            source_url=url,
+            thumbnail_url=thumbnail_url
+        )
+        logger.info(f"✅ Video enqueued in cloud with DB ID: {new_id}")
+
+        if job_id in AUTOMATE_JOBS:
+            AUTOMATE_JOBS[job_id]["status"] = "completed"
+            AUTOMATE_JOBS[job_id]["progress"] = 100
+            AUTOMATE_JOBS[job_id]["current_step"] = "Video scheduled successfully"
+            AUTOMATE_JOBS[job_id]["result"] = {"queue_id": new_id}
+
+    except Exception as e:
+        logger.error(f"Cloud upload/process failed in background: {e}", exc_info=True)
+        if job_id in AUTOMATE_JOBS:
+            AUTOMATE_JOBS[job_id]["status"] = "failed"
+            AUTOMATE_JOBS[job_id]["error"] = str(e)
+            AUTOMATE_JOBS[job_id]["current_step"] = f"Failed: {str(e)}"
+    finally:
+        for f in (temp_filepath, fitted_filepath):
+            if f and os.path.exists(f):
+                logger.info(f"🧹 Cleaning up local temporary video file: {f}")
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
+
+
 @router.post("/automate", summary="Trigger Cloud Automation Pipeline", description="Downloads video, applies layout, and schedules for upload to Supabase.")
 async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTasks):
     logger.info(f"🚀 Starting automation pipeline for: {req.url}")
@@ -113,66 +204,32 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
             final_iso_schedule = target_dt.astimezone().isoformat()
             human_readable_time = target_dt.strftime("%B %d, %I:%M %p")
 
-    # 2. Download the video locally to a temporary location
-    downloads_dir = Path(__file__).parent.parent / "downloads"
-    downloads_dir.mkdir(exist_ok=True)
-    try:
-        temp_filepath = await async_ensure_video_downloaded(
-            url=req.url,
-            target_dir=str(downloads_dir),
-            format_id=req.format_id,
-            prefix="auto_"
-        )
-    except Exception as de:
-        raise HTTPException(status_code=400, detail=f"Download failed: {str(de)}")
+    # Queue durable background task so HTTP response completes in <1s (prevents Render 100s proxy timeout)
+    job_id = uuid.uuid4().hex
+    AUTOMATE_JOBS[job_id] = {
+        "status": "processing",
+        "progress": 10,
+        "current_step": "Pipeline initiated, downloading video in background...",
+        "title": opt_title,
+        "url": req.url,
+        "schedule_time": final_iso_schedule,
+    }
 
-    # Apply Auto-Detect & Fit-to-Canvas (Master Requirement)
-    fitted_filepath = str(downloads_dir / f"{uuid.uuid4().hex}_fitted.mp4")
-    try:
-        import gc
-        gc.collect()
-        from backend.services.resource_limits import heavy_job_gate
-        logger.info("Applying Master Fit-to-Canvas 9:16 layout without cropping...")
-        async with heavy_job_gate("automate_fit_to_canvas"):
-            await asyncio.to_thread(fit_to_canvas, temp_filepath, fitted_filepath, 1080, 1920)
-        gc.collect()
-        if os.path.exists(fitted_filepath) and os.path.getsize(fitted_filepath) > 0:
-            if os.path.exists(temp_filepath): 
-                os.remove(temp_filepath)
-            temp_filepath = fitted_filepath
-    except Exception as e:
-        logger.error(f"Fit-to-canvas failed: {e}")
-        # non-fatal fallback: use temp_filepath as-is
-
-    # 3. Enqueue directly to the Supabase Cloud Storage + Database
-    logger.info(f"⬆️ Sending securely to Supabase Cloud...")
-    try:
-        new_id = await asyncio.to_thread(enqueue_video, 
-            file_path=temp_filepath,
-            title=opt_title,
-            description=opt_desc,
-            hashtags=opt_tags,
-            schedule_time=final_iso_schedule,
-            source_url=req.url,
-            thumbnail_url=req.thumbnail_url
-        )
-        logger.info(f"✅ Video enqueued in cloud with DB ID: {new_id}")
-    except Exception as e:
-        logger.error(f"Cloud Upload failed: {e}")
-        if os.path.exists(temp_filepath):
-            os.remove(temp_filepath)
-        raise HTTPException(status_code=500, detail=f"Cloud Upload failed: {str(e)}")
-
-    # 4. Clean up the local hard drive!
-    if os.path.exists(temp_filepath):
-        logger.info("🧹 Cleaning up local temporary video file...")
-        try:
-            os.remove(temp_filepath)
-        except Exception:
-            pass
+    background_tasks.add_task(
+        _execute_automate_background_pipeline,
+        job_id=job_id,
+        url=req.url,
+        format_id=req.format_id,
+        thumbnail_url=req.thumbnail_url,
+        opt_title=opt_title,
+        opt_desc=opt_desc,
+        opt_tags=opt_tags,
+        final_iso_schedule=final_iso_schedule,
+    )
 
     return {
         "status": "success",
+        "job_id": job_id,
         "message": "Automation pipeline triggered successfully",
         "automation_details": {
             "title":              opt_title,
@@ -186,3 +243,11 @@ async def automate_pipeline(req: AutomateRequest, background_tasks: BackgroundTa
             "model_used":         "Pre-calculated in frontend"
         }
     }
+
+
+@router.get("/automate/status/{job_id}", summary="Check status of background automation pipeline")
+async def get_automate_job_status(job_id: str):
+    job = AUTOMATE_JOBS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job

@@ -40,6 +40,8 @@ export default function CreateReelPage() {
   const [automationElapsed, setAutomationElapsed] = useState(0);
   const automationTimerRef = useRef(null);
   const [automationResult, setAutomationResult] = useState(null);
+  const [automateBackgroundStatus, setAutomateBackgroundStatus] = useState(null);
+  const automatePollRef = useRef(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isAccepted, setIsAccepted] = useState(false);
   const [activeFormatId, setActiveFormatId] = useState(null);
@@ -108,6 +110,10 @@ export default function CreateReelPage() {
     if (automationTimerRef.current) {
       clearInterval(automationTimerRef.current);
       automationTimerRef.current = null;
+    }
+    if (automatePollRef.current) {
+      clearInterval(automatePollRef.current);
+      automatePollRef.current = null;
     }
   };
 
@@ -576,8 +582,31 @@ export default function CreateReelPage() {
       if (res && res.status === 'error') {
         throw new Error(res.message || 'Automation failed');
       }
-      setAutomationResult(res.automation_details || res);
+      setAutomationResult({
+        ...(res.automation_details || res),
+        job_id: res.job_id,
+      });
       toast.success("Scheduled successfully to Cloud!");
+
+      if (res?.job_id) {
+        if (automatePollRef.current) clearInterval(automatePollRef.current);
+        automatePollRef.current = setInterval(async () => {
+          try {
+            const st = await automationApi.getJobStatus(res.job_id);
+            if (st) {
+              setAutomateBackgroundStatus(st);
+              if (st.status === 'completed' || st.status === 'failed') {
+                if (automatePollRef.current) {
+                  clearInterval(automatePollRef.current);
+                  automatePollRef.current = null;
+                }
+              }
+            }
+          } catch (e) {
+            console.debug("Automate background status poll:", e);
+          }
+        }, 2500);
+      }
     } catch (err) {
       const msg = typeof err?.message === 'string' && err.message.trim()
         ? err.message
@@ -1348,13 +1377,35 @@ export default function CreateReelPage() {
                 </div>
 
                 {automationResult ? (
-                  <div className="bg-success/10 border border-success/30 p-4 rounded-lg space-y-2">
+                  <div className="bg-success/10 border border-success/30 p-4 rounded-lg space-y-2.5">
                     <div className="flex items-center gap-2 text-success font-bold text-sm">
                       <Check className="w-4 h-4" /> Pipeline Scheduled Successfully!
                     </div>
                     <p className="text-xs text-text-muted">
                       Scheduled for: <strong className="text-text">{automationResult.scheduled_time}</strong>
                     </p>
+                    {automateBackgroundStatus && (
+                      <div className="pt-2 border-t border-success/20 text-xs flex items-center justify-between">
+                        <span className="font-mono text-[11px] text-text-muted">
+                          {automateBackgroundStatus.status === 'completed' ? (
+                            <span className="text-success font-semibold flex items-center gap-1.5">
+                              <Check className="w-3.5 h-3.5" /> Video uploaded & enqueued in Cloud
+                            </span>
+                          ) : automateBackgroundStatus.status === 'failed' ? (
+                            <span className="text-danger font-semibold">
+                              ⚠️ Background step failed: {automateBackgroundStatus.error || "Please check logs"}
+                            </span>
+                          ) : (
+                            <span className="text-accent flex items-center gap-1.5">
+                              <Loader2 className="w-3.5 h-3.5 animate-spin" /> {automateBackgroundStatus.current_step || "Processing in background..."}
+                            </span>
+                          )}
+                        </span>
+                        <span className="text-[10px] font-mono text-text-muted">
+                          {automateBackgroundStatus.progress}%
+                        </span>
+                      </div>
+                    )}
                   </div>
                 ) : (
                   <div className="space-y-3">
