@@ -37,6 +37,8 @@ export default function CreateReelPage() {
   
   const [isLoading, setIsLoading] = useState(false);
   const [isAutomating, setIsAutomating] = useState(false);
+  const [automationElapsed, setAutomationElapsed] = useState(0);
+  const automationTimerRef = useRef(null);
   const [automationResult, setAutomationResult] = useState(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [isAccepted, setIsAccepted] = useState(false);
@@ -102,6 +104,10 @@ export default function CreateReelPage() {
     if (moderationTimerRef.current) {
       clearInterval(moderationTimerRef.current);
       moderationTimerRef.current = null;
+    }
+    if (automationTimerRef.current) {
+      clearInterval(automationTimerRef.current);
+      automationTimerRef.current = null;
     }
   };
 
@@ -545,6 +551,11 @@ export default function CreateReelPage() {
     // Stop all active background polling timers so they don't consume rate limit or bandwidth
     stopPolling();
     setIsAutomating(true);
+    setAutomationElapsed(0);
+    automationTimerRef.current = setInterval(() => {
+      setAutomationElapsed(prev => prev + 1);
+    }, 1000);
+
     try {
       const payload = {
         title: store.aiAnalysisResult?.viral_title || store.metadata?.title || 'Untitled',
@@ -573,6 +584,10 @@ export default function CreateReelPage() {
         : 'Automation failed. Please check server logs or network.';
       toast.error(msg);
     } finally {
+      if (automationTimerRef.current) {
+        clearInterval(automationTimerRef.current);
+        automationTimerRef.current = null;
+      }
       setIsAutomating(false);
     }
   };
@@ -1343,14 +1358,41 @@ export default function CreateReelPage() {
                   </div>
                 ) : (
                   <div className="space-y-3">
-                    <Button 
-                      className="w-full h-11 bg-accent text-accent-foreground hover:bg-accent/90 text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-sm"
-                      onClick={triggerAutomation}
-                      disabled={isAutomating || !appStore.isYtAuthenticated || (!isAccepted && Boolean(store.aiAnalysisResult))}
-                    >
-                      {isAutomating ? <Loader2 className="w-4 h-4 animate-spin" /> : <MonitorPlay className="w-4 h-4" />}
-                      Deploy & Schedule to YouTube Shorts
-                    </Button>
+                    {isAutomating ? (
+                      <div className="p-4 rounded-lg bg-surface-elevated/70 border border-accent/30 space-y-3">
+                        <div className="flex items-center justify-between text-xs font-mono">
+                          <span className="flex items-center gap-2 text-accent font-semibold">
+                            <Loader2 className="w-4 h-4 animate-spin text-accent" />
+                            {automationElapsed < 12
+                              ? "1/3: Downloading source video stream..."
+                              : automationElapsed < 28
+                              ? "2/3: Applying 9:16 vertical layout & canvas..."
+                              : "3/3: Uploading to Cloud Storage & Scheduling..."}
+                          </span>
+                          <span className="bg-surface px-2 py-0.5 rounded border border-border text-text font-bold">
+                            ⏱ {String(Math.floor(automationElapsed / 60)).padStart(2, '0')}:{String(automationElapsed % 60).padStart(2, '0')}
+                          </span>
+                        </div>
+                        <div className="w-full bg-surface h-2 rounded-full overflow-hidden border border-border">
+                          <div 
+                            className="bg-accent h-full transition-all duration-500 rounded-full"
+                            style={{ width: `${Math.min(15 + automationElapsed * 2.8, 95)}%` }}
+                          />
+                        </div>
+                        <p className="text-[11px] text-text-muted">
+                          HD video processing & canvas re-framing in progress (~20–40s). Please keep this page open.
+                        </p>
+                      </div>
+                    ) : (
+                      <Button 
+                        className="w-full h-11 bg-accent text-accent-foreground hover:bg-accent/90 text-sm font-semibold flex items-center justify-center gap-2 cursor-pointer shadow-sm"
+                        onClick={triggerAutomation}
+                        disabled={!appStore.isYtAuthenticated || (!isAccepted && Boolean(store.aiAnalysisResult))}
+                      >
+                        <MonitorPlay className="w-4 h-4" />
+                        Deploy & Schedule to YouTube Shorts
+                      </Button>
+                    )}
 
                     {!appStore.isYtAuthenticated && (
                       <p className="text-[11px] text-danger text-center">
