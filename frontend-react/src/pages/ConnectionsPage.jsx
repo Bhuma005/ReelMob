@@ -195,14 +195,25 @@ export default function ConnectionsPage() {
 
             <div className="flex items-center gap-2 shrink-0">
               {isYtAuthenticated ? (
-                <Button 
-                  variant="outline"
-                  size="sm"
-                  onClick={() => setIsDisconnectModalOpen(true)}
-                  className="text-xs text-danger hover:bg-danger/10 border-danger/30 cursor-pointer"
-                >
-                  Disconnect Channel
-                </Button>
+                <div className="flex items-center gap-2">
+                  <Button 
+                    size="sm"
+                    onClick={handleYtLogin}
+                    disabled={isLoggingIn}
+                    className="bg-[#FF0000] text-white hover:bg-[#FF0000]/90 text-xs font-semibold flex items-center gap-1.5 cursor-pointer shadow-sm"
+                  >
+                    {isLoggingIn ? <RefreshCw className="w-3.5 h-3.5 animate-spin" /> : <Link2 className="w-3.5 h-3.5" />}
+                    Reconnect Channel
+                  </Button>
+                  <Button 
+                    variant="outline"
+                    size="sm"
+                    onClick={() => setIsDisconnectModalOpen(true)}
+                    className="text-xs text-danger hover:bg-danger/10 border-danger/30 cursor-pointer"
+                  >
+                    Disconnect
+                  </Button>
+                </div>
               ) : (
                 <div className="flex items-center gap-2">
                   <Button 

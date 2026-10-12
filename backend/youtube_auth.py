@@ -287,18 +287,18 @@ async def auth_callback(request: Request):
         redirect_uri = _get_redirect_uri(request)
 
         # Exchange code for tokens
-        token_data = json.dumps({
+        token_payload = urllib.parse.urlencode({
             "code": code,
             "client_id": client_id,
             "client_secret": client_secret,
             "redirect_uri": redirect_uri,
             "grant_type": "authorization_code"
-        }).encode()
+        }).encode("utf-8")
 
         req = urllib.request.Request(
             "https://oauth2.googleapis.com/token",
-            data=token_data,
-            headers={"Content-Type": "application/json"},
+            data=token_payload,
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=10) as res:
