@@ -1311,20 +1311,27 @@ async def stream_dashboard_video(
         if not res.data:
             raise HTTPException(status_code=404, detail="Video not found")
         v = res.data[0]
-        storage_path = v.get("storage_path")
-        if not storage_path:
+        storage_path = v.get("storage_path") or ""
+        source_url = v.get("source_url") or ""
+
+        if not storage_path and not source_url:
             raise HTTPException(status_code=404, detail="Video storage path not found")
 
         target_url = None
-        try:
-            signed = sb.storage.from_("reelgrab-videos").create_signed_url(storage_path, 3600 * 24)
-            url = signed.get("signedURL") or signed.get("signedUrl") or signed
-            if isinstance(url, dict):
-                url = url.get("signedURL") or url.get("signedUrl")
-            if url and isinstance(url, str):
-                target_url = url
-        except Exception as e:
-            logger.warning(f"Signed url failed for stream {clean_video_id}: {e}")
+        if storage_path.startswith("videos/"):
+            try:
+                signed = sb.storage.from_("reelgrab-videos").create_signed_url(storage_path, 3600 * 24)
+                url = signed.get("signedURL") or signed.get("signedUrl") or signed
+                if isinstance(url, dict):
+                    url = url.get("signedURL") or url.get("signedUrl")
+                if url and isinstance(url, str):
+                    target_url = url
+            except Exception as e:
+                logger.warning(f"Signed url failed for stream {clean_video_id}: {e}")
+
+        # If not stored in cloud storage bucket, fallback to source_url if available
+        if not target_url and source_url:
+            return RedirectResponse(url=source_url, status_code=307)
 
         if not target_url:
             raise HTTPException(status_code=404, detail="Video stream URL unavailable")

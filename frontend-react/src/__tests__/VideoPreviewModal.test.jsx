@@ -66,4 +66,46 @@ describe('VideoPreviewModal Component', () => {
     expect(sourceEl).toBeDefined();
     expect(sourceEl.getAttribute('src')).toBe('/api/dashboard/videos/vid-fallback-789/stream');
   });
+
+  it('renders iframe player when video has an Instagram reel source URL', () => {
+    const instagramReelVideo = {
+      id: 'vid-ig-999',
+      title: 'What Happens Next Will Crack You Up',
+      source_url: 'https://www.instagram.com/reel/DXP2hVzEm1W/?exln=MTZhZ3Q1ZmF1eDNqdg==',
+      storage_path: 'source:https://www.instagram.com/reel/DXP2hVzEm1W/?exln=MTZhZ3Q1ZmF1eDNqdg==',
+      status: 'scheduled',
+    };
+
+    const { container } = render(
+      <VideoPreviewModal
+        video={instagramReelVideo}
+        onClose={vi.fn()}
+      />
+    );
+
+    const iframeEl = container.querySelector('iframe');
+    expect(iframeEl).toBeDefined();
+    expect(iframeEl.getAttribute('src')).toBe('https://www.instagram.com/reel/DXP2hVzEm1W/embed/');
+  });
+
+  it('renders iframe player when video has YouTube shorts source URL or youtube_video_id', () => {
+    const youtubeVideo = {
+      id: 'vid-yt-111',
+      title: 'YouTube Shorts Clip',
+      source_url: 'https://www.youtube.com/shorts/dQw4w9WgXcQ',
+      storage_path: 'source:https://www.youtube.com/shorts/dQw4w9WgXcQ',
+      status: 'scheduled',
+    };
+
+    const { container } = render(
+      <VideoPreviewModal
+        video={youtubeVideo}
+        onClose={vi.fn()}
+      />
+    );
+
+    const iframeEl = container.querySelector('iframe');
+    expect(iframeEl).toBeDefined();
+    expect(iframeEl.getAttribute('src')).toContain('https://www.youtube.com/embed/dQw4w9WgXcQ');
+  });
 });

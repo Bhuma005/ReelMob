@@ -21,6 +21,34 @@ export function VideoPreviewModal({
 
   if (!video) return null;
 
+  const getEmbedUrl = (v) => {
+    if (!v) return null;
+    if (v.youtube_video_id) {
+      return `https://www.youtube.com/embed/${v.youtube_video_id}?autoplay=0&rel=0`;
+    }
+    const source = v.source_url || (typeof v.storage_path === 'string' && v.storage_path.startsWith('source:') ? v.storage_path.replace('source:', '') : '');
+    if (!source) return null;
+
+    const ytMatch = source.match(/(?:youtube\.com\/(?:shorts\/|watch\?v=)|youtu\.be\/)([a-zA-Z0-9_-]{11})/i);
+    if (ytMatch && ytMatch[1]) {
+      return `https://www.youtube.com/embed/${ytMatch[1]}?autoplay=0&rel=0`;
+    }
+
+    const igMatch = source.match(/instagram\.com\/(?:reel|p)\/([a-zA-Z0-9_-]+)/i);
+    if (igMatch && igMatch[1]) {
+      return `https://www.instagram.com/reel/${igMatch[1]}/embed/`;
+    }
+
+    return null;
+  };
+
+  const embedUrl = getEmbedUrl(video);
+  const isDirectStorageFile = Boolean(
+    video.storage_url || 
+    (video.storage_path && video.storage_path.startsWith('videos/'))
+  );
+  const directSourceUrl = video.source_url || (typeof video.storage_path === 'string' && video.storage_path.startsWith('source:') ? video.storage_path.replace('source:', '') : '');
+
   const fallbackProxySrc = video.id ? `/api/dashboard/videos/${video.id}/stream` : '';
   const initialSrc = 
     video.storage_url || 
@@ -28,11 +56,12 @@ export function VideoPreviewModal({
     video.video_url || 
     video.url || 
     video.signed_url || 
-    fallbackProxySrc || 
+    (isDirectStorageFile ? fallbackProxySrc : (embedUrl ? '' : fallbackProxySrc)) ||
     '';
 
   const [currentSrc, setCurrentSrc] = useState(initialSrc);
   const videoSrc = currentSrc;
+  const activeVideoUrl = (isDirectStorageFile ? currentSrc : (directSourceUrl || currentSrc)) || fallbackProxySrc;
 
   const handleVideoError = () => {
     if (fallbackProxySrc && currentSrc !== fallbackProxySrc) {
@@ -47,8 +76,8 @@ export function VideoPreviewModal({
   };
 
   const copyVideoLink = () => {
-    if (!currentSrc) return;
-    const fullUrl = currentSrc.startsWith('http') ? currentSrc : `${window.location.origin}${currentSrc}`;
+    if (!activeVideoUrl) return;
+    const fullUrl = activeVideoUrl.startsWith('http') ? activeVideoUrl : `${window.location.origin}${activeVideoUrl}`;
     navigator.clipboard.writeText(fullUrl);
     setCopied(true);
     toast.success('Video stream link copied to clipboard');
@@ -93,9 +122,9 @@ export function VideoPreviewModal({
           </div>
 
           <div className="flex items-center gap-2">
-            {currentSrc && (
+            {activeVideoUrl && (
               <a
-                href={currentSrc}
+                href={activeVideoUrl}
                 target="_blank"
                 rel="noopener noreferrer"
                 download={filename}
@@ -201,7 +230,43 @@ export function VideoPreviewModal({
             <div className="rounded-2xl border border-border bg-surface-elevated/60 p-4 space-y-4 shadow-xl">
               {/* Video Player Display Container */}
               <div className="relative w-full aspect-[9/16] max-h-[380px] mx-auto bg-black rounded-xl overflow-hidden border border-border shadow-2xl flex items-center justify-center">
-                {currentSrc && !videoError ? (
+                {isDirectStorageFile && currentSrc && !videoError ? (
+                  <>
+                    <video
+                      ref={videoRef}
+                      poster={video.thumbnail_url}
+                      controls
+                      playsInline
+                      preload="auto"
+                      className="w-full h-full object-contain"
+                      onWaiting={() => setIsBuffering(true)}
+                      onStalled={() => setIsBuffering(true)}
+                      onPlaying={() => setIsBuffering(false)}
+                      onCanPlay={() => setIsBuffering(false)}
+                      onError={handleVideoError}
+                    >
+                      <source src={currentSrc} type="video/mp4" />
+                      Your browser does not support playing this video.
+                    </video>
+                    {isBuffering && (
+                      <div className="absolute inset-0 flex items-center justify-center bg-black/40 pointer-events-none transition-opacity">
+                        <div className="flex items-center gap-2 px-3 py-1.5 rounded-full bg-black/75 backdrop-blur-xs border border-white/10 text-white text-xs font-mono">
+                          <RefreshCw className="w-3.5 h-3.5 animate-spin text-accent" />
+                          <span>Buffering...</span>
+                        </div>
+                      </div>
+                    )}
+                  </>
+                ) : embedUrl ? (
+                  <iframe
+                    src={embedUrl}
+                    title={video.title || "Video Stream Preview"}
+                    className="w-full h-full border-0 rounded-xl bg-black"
+                    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+                    allowFullScreen
+                    scrolling="no"
+                  />
+                ) : currentSrc && !videoError ? (
                   <>
                     <video
                       ref={videoRef}
@@ -246,9 +311,9 @@ export function VideoPreviewModal({
                         ? 'Inline stream could not decode. Use the direct link below.' 
                         : 'Preview stream stored in cloud bucket.'}
                     </p>
-                    {currentSrc && (
+                    {activeVideoUrl && (
                       <a
-                        href={currentSrc}
+                        href={activeVideoUrl}
                         target="_blank"
                         rel="noopener noreferrer"
                         download={filename}
@@ -270,27 +335,27 @@ export function VideoPreviewModal({
                   </span>
                   <div className="flex items-center justify-between gap-2 p-2 rounded-lg bg-surface-elevated border border-border/50">
                     <a
-                      href={currentSrc || '#'}
+                      href={activeVideoUrl || '#'}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-accent hover:underline font-mono text-[11px] truncate flex-1"
-                      title={currentSrc}
+                      title={activeVideoUrl}
                     >
-                      {currentSrc ? (currentSrc.length > 32 ? `${currentSrc.slice(0, 32)}...` : currentSrc) : 'Direct stream link'}
+                      {activeVideoUrl ? (activeVideoUrl.length > 32 ? `${activeVideoUrl.slice(0, 32)}...` : activeVideoUrl) : 'Direct stream link'}
                     </a>
                     <div className="flex items-center gap-1 shrink-0">
                       <button
                         type="button"
                         onClick={copyVideoLink}
-                        disabled={!currentSrc}
+                        disabled={!activeVideoUrl}
                         className="p-1 rounded text-text-muted hover:text-text hover:bg-surface transition-colors cursor-pointer"
                         title="Copy video link"
                       >
                         {copied ? <Check className="w-3.5 h-3.5 text-success" /> : <Copy className="w-3.5 h-3.5" />}
                       </button>
-                      {currentSrc && (
+                      {activeVideoUrl && (
                         <a
-                          href={currentSrc}
+                          href={activeVideoUrl}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="p-1 rounded text-text-muted hover:text-text hover:bg-surface transition-colors"
