@@ -168,3 +168,66 @@ class TestGitHubActionsWorkerOffload:
 
             # Verify YouTube insert was called with the uploaded ID
             mock_yt_service.videos.return_value.insert.assert_called_once()
+
+
+class TestManualPublishEndpoint:
+    """Tests verifying POST /api/dashboard/videos/{video_id}/publish avoids 404 on source: URLs."""
+
+    def test_publish_dashboard_video_source_url_prioritizes_and_dispatches(self, client):
+        mock_sb = MagicMock()
+        video_record = {
+            "id": "vid-1234",
+            "title": "What Happens Next Will Crack You Up",
+            "storage_path": "source:https://www.instagram.com/reel/DXP2hVzEm1W/",
+            "status": "scheduled",
+            "description": "Funny clip",
+            "hashtags": ["#funny"]
+        }
+        queue_record = {
+            "id": "sched-5678",
+            "library_video_id": "vid-1234",
+            "upload_status": "pending"
+        }
+
+        # Mock video_library lookup
+        lib_select = MagicMock()
+        mock_sb.table.return_value.select.return_value = lib_select
+        lib_eq = MagicMock()
+        lib_select.eq.return_value = lib_eq
+        
+        # We need mock_sb.table to return different mocks depending on table name
+        lib_table = MagicMock()
+        lib_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[video_record])
+        lib_table.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[video_record])
+
+        sched_table = MagicMock()
+        sched_table.select.return_value.eq.return_value.execute.return_value = MagicMock(data=[queue_record])
+        sched_table.update.return_value.eq.return_value.execute.return_value = MagicMock(data=[queue_record])
+
+        activity_table = MagicMock()
+        activity_table.insert.return_value.execute.return_value = MagicMock(data=[{}])
+
+        def table_router(table_name):
+            if table_name == "video_library":
+                return lib_table
+            elif table_name == "scheduled_videos":
+                return sched_table
+            elif table_name == "video_activity_log":
+                return activity_table
+            return MagicMock()
+
+        mock_sb.table.side_effect = table_router
+
+        with patch("cloud.cloud_auth.get_supabase_client", return_value=mock_sb), \
+             patch("backend.automate.dispatch_github_actions_upload", return_value=True) as mock_dispatch:
+
+            response = client.post("/api/dashboard/videos/vid-1234/publish")
+            assert response.status_code == 200
+            data = response.json()
+            assert data["status"] == "success"
+            assert "Dispatched to GitHub Actions worker" in data["message"]
+            mock_dispatch.assert_called_once_with(video_id="sched-5678")
+
+            # Verify storage download was NOT attempted (preventing 404 Object not found)
+            mock_sb.storage.from_.assert_not_called()
+

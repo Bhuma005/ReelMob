@@ -2097,13 +2097,6 @@ async def publish_dashboard_video(video_id: str):
         raise HTTPException(status_code=400, detail="Invalid video_id")
 
     try:
-        try:
-            from googleapiclient.discovery import build
-            from googleapiclient.http import MediaFileUpload
-            from google.oauth2.credentials import Credentials
-        except ImportError:
-            raise HTTPException(status_code=500, detail="Google API packages missing (pip install google-api-python-client google-auth-oauthlib)")
-
         sb = get_supabase_client()
         res = sb.table("video_library").select("*").eq("id", clean_video_id).execute()
         if not res.data:
@@ -2113,100 +2106,142 @@ async def publish_dashboard_video(video_id: str):
         if video.get("status") in ["published", "delete_pending", "cleaned"] or video.get("youtube_video_id"):
             raise HTTPException(status_code=400, detail="Already published!")
 
-        if not video.get("storage_path"):
-            raise HTTPException(status_code=400, detail="Video file is missing from cloud storage")
+        storage_path = video.get("storage_path") or ""
+        source_url = video.get("source_url") or ""
+
+        now = datetime.now(timezone.utc).isoformat()
+        now_dt = datetime.now(timezone.utc)
+        delete_after = (now_dt + timedelta(days=3)).isoformat()
+
+        # 1. Update scheduled_videos queue to make this video due IMMEDIATELY (schedule_time <= NOW)
+        q_res = sb.table("scheduled_videos").select("id").eq("library_video_id", clean_video_id).execute()
+        queue_id = None
+        if q_res.data and len(q_res.data) > 0:
+            queue_id = q_res.data[0]["id"]
+            sb.table("scheduled_videos").update({
+                "schedule_time": now,
+                "upload_status": "pending",
+                "claimed_at": None,
+                "worker_id": None,
+                "lease_expires_at": None,
+                "last_error": None
+            }).eq("id", queue_id).execute()
+        else:
+            q_insert = sb.table("scheduled_videos").insert({
+                "title": video.get("title", "Untitled"),
+                "description": video.get("description", ""),
+                "hashtags": video.get("hashtags", []),
+                "storage_path": storage_path or f"source:{source_url}",
+                "schedule_time": now,
+                "upload_status": "pending",
+                "library_video_id": clean_video_id
+            }).execute()
+            if q_insert.data:
+                queue_id = q_insert.data[0]["id"]
+
+        sb.table("video_library").update({
+            "status": "scheduled",
+            "schedule_time": now
+        }).eq("id", clean_video_id).execute()
 
         sb.table("video_activity_log").insert({
             "video_id": clean_video_id,
-            "event_type": "UPLOAD_STARTED",
-            "message": "Manual publish triggered from dashboard"
+            "event_type": "MANUAL_PUBLISH_TRIGGERED",
+            "message": "Manual publish triggered from dashboard - prioritized for immediate upload"
         }).execute()
 
-        logger.info(f"Downloading video for publish: {video.get('storage_path')}")
-        file_bytes = sb.storage.from_("reelgrab-videos").download(video.get("storage_path"))
+        # 2. Dispatch GitHub Actions worker immediately so it processes right away
+        from backend.automate import dispatch_github_actions_upload
+        dispatched = dispatch_github_actions_upload(video_id=queue_id or clean_video_id)
 
-        from cloud.cloud_auth import get_youtube_creds
-        try:
-            creds_data = get_youtube_creds()
-        except Exception:
-            raise HTTPException(status_code=500, detail="YouTube Credentials not configured in .env")
+        # 3. If storage_path is an actual Supabase Storage file ('videos/...'), attempt direct upload if possible
+        if storage_path.startswith("videos/"):
+            try:
+                from cloud.cloud_auth import get_youtube_creds
+                from googleapiclient.discovery import build
+                from googleapiclient.http import MediaFileUpload
+                from google.oauth2.credentials import Credentials
 
-        creds = Credentials(
-            token=None,
-            refresh_token=creds_data["refresh_token"],
-            token_uri="https://oauth2.googleapis.com/token",
-            client_id=creds_data["client_id"],
-            client_secret=creds_data["client_secret"]
-        )
-        yt_service = build("youtube", "v3", credentials=creds)
+                file_bytes = sb.storage.from_("reelgrab-videos").download(storage_path)
+                creds_data = get_youtube_creds()
+                creds = Credentials(
+                    token=None,
+                    refresh_token=creds_data["refresh_token"],
+                    token_uri="https://oauth2.googleapis.com/token",
+                    client_id=creds_data["client_id"],
+                    client_secret=creds_data["client_secret"]
+                )
+                yt_service = build("youtube", "v3", credentials=creds)
 
-        tags = video.get("hashtags", [])
-        if isinstance(tags, str): tags = tags.replace("#", "").split()
-        else: tags = [t.replace("#", "") for t in tags]
+                tags = video.get("hashtags", [])
+                if isinstance(tags, str): tags = tags.replace("#", "").split()
+                else: tags = [t.replace("#", "") for t in tags]
 
-        tag_str = " ".join([f"#{t}" for t in tags])
-        full_desc = f"{video.get('description', '')}\n\n{tag_str}".strip()
+                tag_str = " ".join([f"#{t}" for t in tags])
+                full_desc = f"{video.get('description', '')}\n\n{tag_str}".strip()
 
-        body = {
-            "snippet": {
-                "title": video.get("title", "ReelGrab Upload"),
-                "description": full_desc,
-                "tags": tags,
-                "categoryId": "22"
-            },
-            "status": {
-                "privacyStatus": "public",
-                "madeForKids": False,
-                "selfDeclaredMadeForKids": False
-            }
-        }
+                body = {
+                    "snippet": {
+                        "title": video.get("title", "ReelGrab Upload"),
+                        "description": full_desc,
+                        "tags": tags,
+                        "categoryId": "22"
+                    },
+                    "status": {
+                        "privacyStatus": "public",
+                        "madeForKids": False,
+                        "selfDeclaredMadeForKids": False
+                    }
+                }
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
-            tmp.write(file_bytes)
-            tmp_path = tmp.name
+                with tempfile.NamedTemporaryFile(delete=False, suffix=".mp4") as tmp:
+                    tmp.write(file_bytes)
+                    tmp_path = tmp.name
 
-        try:
-            media = MediaFileUpload(tmp_path, mimetype="video/mp4", resumable=True)
-            request = yt_service.videos().insert(
-                part="snippet,status",
-                body=body,
-                media_body=media
-            )
-            response = None
-            while response is None:
-                status, response = request.next_chunk()
+                try:
+                    media = MediaFileUpload(tmp_path, mimetype="video/mp4", resumable=True)
+                    request = yt_service.videos().insert(part="snippet,status", body=body, media_body=media)
+                    response = None
+                    while response is None:
+                        status, response = request.next_chunk()
+                    yt_id = response.get("id")
+                    yt_url = f"https://youtube.com/shorts/{yt_id}"
 
-            yt_id = response.get("id")
-            yt_url = f"https://youtube.com/shorts/{yt_id}"
-            now = datetime.now(timezone.utc).isoformat()
+                    sb.table("video_library").update({
+                        "status": "published",
+                        "upload_status": "uploaded",
+                        "youtube_video_id": yt_id,
+                        "youtube_url": yt_url,
+                        "uploaded_at": now
+                    }).eq("id", clean_video_id).execute()
 
-            sb.table("video_library").update({
-                "status": "published",
-                "upload_status": "uploaded",
-                "youtube_video_id": yt_id,
-                "youtube_url": yt_url,
-                "uploaded_at": now
-            }).eq("id", clean_video_id).execute()
+                    sb.table("video_activity_log").insert({
+                        "video_id": clean_video_id,
+                        "event_type": "YOUTUBE_UPLOAD_SUCCESS",
+                        "message": f"Successfully published via dashboard. ID: {yt_id}"
+                    }).execute()
 
-            sb.table("video_activity_log").insert({
-                "video_id": clean_video_id,
-                "event_type": "YOUTUBE_UPLOAD_SUCCESS",
-                "message": f"Successfully published via dashboard. ID: {yt_id}"
-            }).execute()
+                    if queue_id:
+                        sb.table("scheduled_videos").update({
+                            "upload_status": "uploaded",
+                            "delete_after": delete_after,
+                            "youtube_video_id": yt_id,
+                            "uploaded_at": now
+                        }).eq("id", queue_id).execute()
 
-            now_dt = datetime.now(timezone.utc)
-            delete_after = (now_dt + timedelta(days=3)).isoformat()
-            sb.table("scheduled_videos").update({
-                "upload_status": "uploaded",
-                "delete_after": delete_after,
-                "youtube_video_id": yt_id,
-                "uploaded_at": now
-            }).eq("library_video_id", clean_video_id).execute()
+                    return {
+                        "status": "success",
+                        "message": f"Successfully published to YouTube! Video ID: {yt_id}",
+                        "youtube_video_id": yt_id
+                    }
+                finally:
+                    if os.path.exists(tmp_path):
+                        os.remove(tmp_path)
+            except Exception as direct_err:
+                logger.warning(f"Direct publish skipped/failed, video remaining queued for GitHub worker: {direct_err}")
 
-            return {"status": "success", "message": "Published"}
-        finally:
-            if os.path.exists(tmp_path):
-                os.remove(tmp_path)
+        msg = "Video prioritized for immediate publish! Dispatched to GitHub Actions worker." if dispatched else "Video prioritized for immediate publish (due in scheduled_videos queue)."
+        return {"status": "success", "message": msg}
 
     except HTTPException:
         raise
